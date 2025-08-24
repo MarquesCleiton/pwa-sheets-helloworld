@@ -18,7 +18,7 @@ window.addEventListener("DOMContentLoaded", () => {
         if (GoogleAuthManager.isAuthenticated()) {
           loginStatus.textContent = "Você já está logado!";
           loginStatus.className = "alert alert-success";
-          window.location.href = "/pages/cadastro.html";
+          window.location.href = import.meta.env.BASE_URL + "pages/cadastro.html";
         }
       } catch (error) {
         console.error("Erro na inicialização do login:", error);

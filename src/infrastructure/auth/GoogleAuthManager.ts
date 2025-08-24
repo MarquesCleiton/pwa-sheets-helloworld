@@ -58,7 +58,7 @@ export class GoogleAuthManager {
     }));
 
     // Redireciona imediatamente após login
-    window.location.href = "/pages/cadastro.html";
+    window.location.href = import.meta.env.BASE_URL + "pages/cadastro.html";
   }
 
   /**
