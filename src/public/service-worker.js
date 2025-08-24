@@ -24,9 +24,9 @@ self.addEventListener("activate", event => {
   console.log("Service Worker ativado");
 });
 
-// Intercepta requisições e responde com cache se offline
-self.addEventListener("fetch", event => {
-  event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
-  );
-});
+// // Intercepta requisições e responde com cache se offline
+// self.addEventListener("fetch", event => {
+//   event.respondWith(
+//     fetch(event.request).catch(() => caches.match(event.request))
+//   );
+// });
