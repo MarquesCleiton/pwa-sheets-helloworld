@@ -7,12 +7,12 @@
   "theme_color": "#0d6efd",
   "icons": [
     {
-      "src": "/pwa-sheets-helloworld/Vafyndell-192.png",
+      "src": "/pwa-sheets-helloworld/icon-192.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "/pwa-sheets-helloworld/Vafyndell-512.png",
+      "src": "/pwa-sheets-helloworld/icon-512.png",
       "sizes": "512x512",
       "type": "image/png"
     }
