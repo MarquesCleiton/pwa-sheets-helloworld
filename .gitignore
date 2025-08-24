@@ -21,10 +21,6 @@ Thumbs.db
 .idea/
 *.sw?
 
-# Arquivos de build de PWA
-service-worker.js
-manifest.json
-
 # Cache de TypeScript
 *.tsbuildinfo
 
