@@ -7,7 +7,7 @@ export default defineConfig({
     build: {
     rollupOptions: {
       input: {
-        cadastro: 'src/pages/cadastro.html'
+        cadastro: 'public/pages/cadastro.html'
       }
     }
   },
