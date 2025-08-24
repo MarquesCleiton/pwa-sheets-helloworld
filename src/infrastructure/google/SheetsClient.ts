@@ -4,7 +4,7 @@ export class SheetsClient {
 
   constructor(sheetId: string = "19B2aMGrajvhPJfOvYXt059-fECytaN38iFsP8GInD_g") {
     this.sheetId = sheetId;
-    this.accessToken = localStorage.getItem("accessToken");
+    this.accessToken = localStorage.getItem("token");
     if (!this.accessToken) {
       throw new Error("Usuário não autenticado. Token não encontrado.");
     }
