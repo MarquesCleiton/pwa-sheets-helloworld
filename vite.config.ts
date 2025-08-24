@@ -4,10 +4,10 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
   base: '/pwa-sheets-helloworld/',
-    build: {
+  build: {
     rollupOptions: {
       input: {
-        cadastro: 'public/pages/cadastro.html'
+        cadastro: 'src/presentation/pages/cadastro.html'
       }
     }
   },
@@ -37,7 +37,7 @@ export default defineConfig({
       }
     })
   ],
-    server: {
+  server: {
     port: 3000
   }
 });

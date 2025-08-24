@@ -19,7 +19,7 @@ window.addEventListener("DOMContentLoaded", () => {
         if (GoogleAuthManager.isAuthenticated()) {
           loginStatus.textContent = "Você já está logado!";
           loginStatus.className = "alert alert-success";
-          navigateTo("pages/cadastro.html");
+          navigateTo("src/presentation/pages/cadastro.html");
         }
       } catch (error) {
         console.error("Erro na inicialização do login:", error);

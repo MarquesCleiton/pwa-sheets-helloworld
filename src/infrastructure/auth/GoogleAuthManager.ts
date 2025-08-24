@@ -60,7 +60,7 @@ export class GoogleAuthManager {
     }));
 
     // Redireciona imediatamente após login
-    navigateTo("pages/cadastro.html")
+    navigateTo("src/presentation/pages/cadastro.html")
   }
 
   /**
