@@ -1,3 +1,5 @@
+import { navigateTo } from "../../utils/navigation";
+
 /**
  * Classe responsável pela autenticação via Google Identity Services (GIS)
  * com gerenciamento de token, dados do usuário e renovação automática.
@@ -58,7 +60,7 @@ export class GoogleAuthManager {
     }));
 
     // Redireciona imediatamente após login
-    window.location.href = import.meta.env.BASE_URL + "pages/cadastro.html";
+    navigateTo("pages/cadastro.html")
   }
 
   /**

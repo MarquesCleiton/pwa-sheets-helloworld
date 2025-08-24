@@ -1,4 +1,5 @@
 import { GoogleAuthManager } from "./infrastructure/auth/GoogleAuthManager.js";
+import { navigateTo } from "./utils/navigation.js";
 
 // ID do seu projeto no Google Cloud
 const CLIENT_ID = "338305920567-bhd608ebcip1u08qf0gb5f08o4je4dnp.apps.googleusercontent.com";
@@ -18,7 +19,7 @@ window.addEventListener("DOMContentLoaded", () => {
         if (GoogleAuthManager.isAuthenticated()) {
           loginStatus.textContent = "Você já está logado!";
           loginStatus.className = "alert alert-success";
-          window.location.href = import.meta.env.BASE_URL + "pages/cadastro.html";
+          navigateTo("pages/cadastro.html");
         }
       } catch (error) {
         console.error("Erro na inicialização do login:", error);
