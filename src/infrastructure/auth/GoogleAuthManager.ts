@@ -30,7 +30,6 @@ export class GoogleAuthManager {
         type: "standard"
       });
     }
-console.log("4...")
     // Tenta login automático, se permitido pelo navegador
     window.google.accounts.id.prompt();
   }
@@ -58,6 +57,8 @@ console.log("4...")
       exp: payload.exp
     }));
 
+    // Redireciona imediatamente após login
+    window.location.href = "/pages/cadastro.html";
   }
 
   /**
