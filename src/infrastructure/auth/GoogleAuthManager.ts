@@ -59,7 +59,7 @@ console.log("4...")
     }));
 
     // Redireciona imediatamente após login
-    window.location.href = "/cadastro.html";
+    window.location.href = "src/presentation/pages/cadastro.html";
   }
 
   /**
