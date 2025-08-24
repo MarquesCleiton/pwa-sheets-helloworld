@@ -1,6 +1,16 @@
 {
   "compilerOptions": {
-    "types": ["vite/client"]
+    "target": "ESNext",
+    "useDefineForClassFields": true,
+    "lib": ["DOM", "ESNext"],          // ✅ Inclui Promise, fetch, etc.
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "jsx": "react-jsx",
+    "types": ["vite/client"]           // ✅ Tipos do Vite
   },
-  "include": ["src", "types.d.ts"] // ou ["vite-env.d.ts"]
+  "include": ["src", "vite-env.d.ts"]
 }
