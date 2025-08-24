@@ -1,12 +1,6 @@
 {
   "compilerOptions": {
-    "target": "es6",
-    "module": "es6",
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "strict": true,
-    "baseUrl": "./src",
-    "typeRoots": ["./src/types", "./node_modules/@types"]
+    "types": ["vite/client"]
   },
-  "include": ["src/**/*.ts", "src/types/**/*.ts"]
+  "include": ["src", "types.d.ts"] // ou ["vite-env.d.ts"]
 }
