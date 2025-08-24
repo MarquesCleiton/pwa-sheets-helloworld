@@ -58,8 +58,6 @@ console.log("4...")
       exp: payload.exp
     }));
 
-    // Redireciona imediatamente após login
-    window.location.href = "src/presentation/pages/cadastro.html";
   }
 
   /**
