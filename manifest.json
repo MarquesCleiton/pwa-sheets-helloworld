@@ -1,8 +1,8 @@
 {
   "name": "Vafyndell",
   "short_name": "Vafyndell",
-  "start_url": "./index.html",
-  "display": "fullscreen",
+  "start_url": "/pwa-sheets-helloworld/",
+  "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#0d6efd",
   "icons": [
