@@ -5,31 +5,25 @@ const CLIENT_ID = "338305920567-bhd608ebcip1u08qf0gb5f08o4je4dnp.apps.googleuser
 
 window.addEventListener("DOMContentLoaded", () => {
   const loginStatus = document.getElementById("loginStatus") as HTMLDivElement;
+  const loginBtn = document.getElementById("googleSignInBtn");
 
-  const checkGISReady = setInterval(async () => {
-    const gisLoaded =
-      window.google &&
-      window.google.accounts?.id &&
-      window.google.accounts?.oauth2;
+  if (!loginBtn) return;
 
-    if (gisLoaded) {
-      clearInterval(checkGISReady);
+  loginBtn.addEventListener("click", async () => {
+    try {
+      loginStatus.textContent = "Carregando autenticação...";
+      loginStatus.className = "alert alert-info";
 
-      try {
-        await GoogleAuthManager.init(CLIENT_ID);
+      await GoogleAuthManager.signIn(CLIENT_ID);
 
-        if (GoogleAuthManager.isAuthenticated()) {
-          loginStatus.textContent = "Você já está logado!";
-          loginStatus.className = "alert alert-success";
+      loginStatus.textContent = "Login realizado com sucesso!";
+      loginStatus.className = "alert alert-success";
 
-          // Use o caminho relativo baseado no BASE_URL
-          navigateTo("src/presentation/pages/cadastro.html");
-        }
-      } catch (error) {
-        console.error("Erro na inicialização do login:", error);
-        loginStatus.textContent = "Erro ao carregar autenticação.";
-        loginStatus.className = "alert alert-danger";
-      }
+      navigateTo("src/presentation/pages/cadastro.html");
+    } catch (error) {
+      console.error("Erro no login:", error);
+      loginStatus.textContent = "Erro ao autenticar. Tente novamente.";
+      loginStatus.className = "alert alert-danger";
     }
-  }, 100);
+  });
 });

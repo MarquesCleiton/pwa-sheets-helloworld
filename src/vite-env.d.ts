@@ -8,13 +8,12 @@ declare global {
   interface Window {
     google: {
       accounts: {
-        id: any;
         oauth2: {
           initTokenClient: (config: {
             client_id: string;
             scope: string;
+            prompt?: string;
             callback: (res: TokenResponse) => void;
-            prompt?: string; // <-- aqui está a correção!
           }) => {
             requestAccessToken: () => void;
           };
@@ -32,5 +31,4 @@ declare global {
     error_description?: string;
   }
 }
-
 
