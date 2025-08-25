@@ -1,24 +1,28 @@
 import { GoogleAuthManager } from "./infrastructure/auth/GoogleAuthManager.js";
 import { navigateTo } from "./utils/navigation.js";
 
-// ID do seu projeto no Google Cloud
 const CLIENT_ID = "338305920567-bhd608ebcip1u08qf0gb5f08o4je4dnp.apps.googleusercontent.com";
 
 window.addEventListener("DOMContentLoaded", () => {
   const loginStatus = document.getElementById("loginStatus") as HTMLDivElement;
 
   const checkGISReady = setInterval(async () => {
-    if (window.google && window.google.accounts?.id) {
+    const gisLoaded =
+      window.google &&
+      window.google.accounts?.id &&
+      window.google.accounts?.oauth2;
+
+    if (gisLoaded) {
       clearInterval(checkGISReady);
 
       try {
-        // Inicializa autenticação
         await GoogleAuthManager.init(CLIENT_ID);
 
-        // Verifica se já está logado
         if (GoogleAuthManager.isAuthenticated()) {
           loginStatus.textContent = "Você já está logado!";
           loginStatus.className = "alert alert-success";
+
+          // Use o caminho relativo baseado no BASE_URL
           navigateTo("src/presentation/pages/cadastro.html");
         }
       } catch (error) {

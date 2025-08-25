@@ -10,16 +10,17 @@ declare global {
       accounts: {
         id: any;
         oauth2: {
-          tokenClient: (config: {
+          initTokenClient: (config: {
             client_id: string;
             scope: string;
             callback: (res: TokenResponse) => void;
+            prompt?: string; // <-- aqui está a correção!
           }) => {
             requestAccessToken: () => void;
           };
         };
       };
-    };
+    }
   }
 
   interface TokenResponse {
@@ -31,3 +32,5 @@ declare global {
     error_description?: string;
   }
 }
+
+

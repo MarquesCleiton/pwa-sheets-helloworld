@@ -5,6 +5,9 @@ const SCOPES = "https://www.googleapis.com/auth/spreadsheets https://www.googlea
 export class GoogleAuthManager {
   private static clientId: string;
 
+  /**
+   * Inicializa o login com Google Identity Services
+   */
   static init(clientId: string): void {
     this.clientId = clientId;
 
@@ -16,7 +19,7 @@ export class GoogleAuthManager {
     window.google.accounts.id.initialize({
       client_id: this.clientId,
       callback: this.handleCredentialResponse.bind(this),
-      auto_select: false,
+      auto_select: false
     });
 
     const buttonDiv = document.getElementById("googleSignInBtn");
@@ -31,15 +34,17 @@ export class GoogleAuthManager {
     window.google.accounts.id.prompt();
   }
 
-  private static async handleCredentialResponse(response: google.accounts.CredentialResponse) {
+  /**
+   * Trata o retorno do login com o ID Token (JWT)
+   */
+  private static handleCredentialResponse(response: google.accounts.CredentialResponse): void {
     const idToken = response.credential;
     if (!idToken) {
-      console.error("Token inválido no login.");
+      console.error("Token de ID inválido.");
       return;
     }
 
     const payload = GoogleAuthManager.decodeJwt(idToken);
-
     localStorage.setItem("token", idToken);
     localStorage.setItem("user", JSON.stringify({
       name: payload.name,
@@ -48,28 +53,46 @@ export class GoogleAuthManager {
       exp: payload.exp
     }));
 
-    // Solicita o access_token com os escopos desejados
-    try {
-      const tokenResponse = await window.google.accounts.oauth2.tokenClient({
+    // Tenta obter access token silenciosamente, depois com consentimento se falhar
+    this.requestAccessTokenSilentFirst();
+  }
+
+  /**
+   * Tenta solicitar access_token silenciosamente primeiro, e com consentimento se necessário
+   */
+  private static requestAccessTokenSilentFirst(): void {
+    let triedSilent = false;
+
+    const request = () => {
+      const tokenClient = window.google.accounts.oauth2.initTokenClient({
         client_id: this.clientId,
         scope: SCOPES,
-        callback: (res) => {
+        prompt: triedSilent ? 'consent' : '', // silent first, depois consent
+        callback: (res: TokenResponse) => {
           if (res.error) {
+            if (!triedSilent) {
+              triedSilent = true;
+              request(); // tenta com consentimento
+              return;
+            }
             console.error("Erro ao obter access_token:", res);
             return;
           }
+
           localStorage.setItem("accessToken", res.access_token);
-          // Redireciona após obter tudo
           navigateTo("src/presentation/pages/cadastro.html");
         }
       });
 
-      tokenResponse.requestAccessToken();
-    } catch (err) {
-      console.error("Erro ao requisitar access token:", err);
-    }
+      tokenClient.requestAccessToken();
+    };
+
+    request();
   }
 
+  /**
+   * Verifica se o usuário está autenticado (ID Token ainda válido)
+   */
   static isAuthenticated(): boolean {
     const token = localStorage.getItem("token");
     const userData = localStorage.getItem("user");
@@ -85,6 +108,9 @@ export class GoogleAuthManager {
     }
   }
 
+  /**
+   * Retorna os dados do usuário logado
+   */
   static getUser(): { name: string; email: string; picture: string } | null {
     const user = localStorage.getItem("user");
     if (!user) return null;
@@ -101,10 +127,16 @@ export class GoogleAuthManager {
     }
   }
 
+  /**
+   * Retorna o access_token atual
+   */
   static getToken(): string | null {
     return localStorage.getItem("accessToken");
   }
 
+  /**
+   * Faz logout e redireciona para a tela de login
+   */
   static logout(): void {
     localStorage.removeItem("token");
     localStorage.removeItem("accessToken");
@@ -112,6 +144,9 @@ export class GoogleAuthManager {
     window.location.href = "/login.html";
   }
 
+  /**
+   * Decodifica um JWT para obter seu payload
+   */
   private static decodeJwt(token: string): any {
     const base64Url = token.split('.')[1];
     const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
