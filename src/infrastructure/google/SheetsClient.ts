@@ -1,19 +1,20 @@
 export class SheetsClient {
   private readonly sheetId: string;
-  private readonly accessToken: string | null;
 
   constructor(sheetId: string = "19B2aMGrajvhPJfOvYXt059-fECytaN38iFsP8GInD_g") {
     this.sheetId = sheetId;
-    this.accessToken = localStorage.getItem("token");
-    if (!this.accessToken) {
-      throw new Error("Usuário não autenticado. Token não encontrado.");
-    }
   }
 
-  private get headers() {
+  private get accessToken(): string {
+    const token = localStorage.getItem("accessToken");
+    if (!token) throw new Error("Token de acesso não encontrado. Faça login novamente.");
+    return token;
+  }
+
+  private get headers(): HeadersInit {
     return {
       Authorization: `Bearer ${this.accessToken}`,
-      "Content-Type": "application/json",
+      "Content-Type": "application/json"
     };
   }
 
@@ -21,13 +22,13 @@ export class SheetsClient {
     const res = await fetch(url, {
       method,
       headers: this.headers,
-      body: body ? JSON.stringify(body) : undefined,
+      body: body ? JSON.stringify(body) : undefined
     });
 
     if (!res.ok) {
-      const error = await res.json();
+      const error = await res.json().catch(() => ({}));
       console.error("Erro na requisição ao Google Sheets:", error);
-      throw new Error(error.error.message || "Erro desconhecido");
+      throw new Error(error.error?.message || "Erro desconhecido ao acessar o Google Sheets.");
     }
 
     return res.json();
@@ -44,12 +45,12 @@ export class SheetsClient {
     return headers.map(header => obj[header] ?? "");
   }
 
-  async appendRowByHeader(sheetName: string, data: Record<string, string>) {
+  async appendRowByHeader(sheetName: string, data: Record<string, string>): Promise<void> {
     const headers = await this.getHeaders(sheetName);
     if (headers.length === 0) throw new Error("Cabeçalhos não encontrados na planilha.");
 
     const values = [this.mapObjectToRow(data, headers)];
-    const range = `${sheetName}!A1`; // Aponta para o cabeçalho
+    const range = `${sheetName}!A1`;
 
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${range}:append?valueInputOption=RAW`;
 
