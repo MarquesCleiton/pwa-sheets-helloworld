@@ -3,8 +3,8 @@
   "short_name": "Vafyndell",
   "start_url": "/pwa-sheets-helloworld/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#0d6efd",
+  "background_color": "#8B5A2B",
+  "theme_color": "#A0522D",
   "icons": [
     {
       "src": "/pwa-sheets-helloworld/Vafyndell-192.png",
