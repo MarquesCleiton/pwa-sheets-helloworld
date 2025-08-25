@@ -1,7 +1,7 @@
 import { SheetsClient } from "../../infrastructure/google/SheetsClient";
 
 document.addEventListener("DOMContentLoaded", () => {
-  const form = document.getElementById("formCadastro") as HTMLFormElement;
+  const form = document.getElementById("cadastroForm") as HTMLFormElement;
 
   if (!form) {
     console.error("Formulário não encontrado!");
