@@ -1,3 +1,5 @@
+import { GoogleAuthManager } from "../auth/GoogleAuthManager";
+
 export class SheetsClient {
   private readonly sheetId: string;
 
@@ -5,23 +7,27 @@ export class SheetsClient {
     this.sheetId = sheetId;
   }
 
-  private get accessToken(): string {
-    const token = localStorage.getItem("accessToken");
-    if (!token) throw new Error("Token de acesso não encontrado. Faça login novamente.");
+  private async getAccessToken(): Promise<string> {
+    await GoogleAuthManager.authenticate();
+    const token = GoogleAuthManager.getAccessToken();
+    if (!token) throw new Error("Token de acesso inválido ou ausente.");
     return token;
   }
 
-  private get headers(): HeadersInit {
+  private async getHeadersInit(): Promise<HeadersInit> {
+    const token = await this.getAccessToken();
     return {
-      Authorization: `Bearer ${this.accessToken}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json"
     };
   }
 
   private async request<T>(url: string, method: string = "GET", body?: any): Promise<T> {
+    const headers = await this.getHeadersInit();
+
     const res = await fetch(url, {
       method,
-      headers: this.headers,
+      headers,
       body: body ? JSON.stringify(body) : undefined
     });
 

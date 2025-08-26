@@ -1,63 +1,96 @@
-import { navigateTo } from "../../utils/navigation";
-
 const SCOPES = "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file";
 
 export class GoogleAuthManager {
-  static async signIn(clientId: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!window.google || !window.google.accounts?.oauth2) {
-        reject("Google Identity Services não carregado.");
-        return;
-      }
+  private static clientId = "338305920567-bhd608ebcip1u08qf0gb5f08o4je4dnp.apps.googleusercontent.com";
 
+  static init(): void {
+    if (!window.google || !window.google.accounts || !window.google.accounts.oauth2) {
+      console.warn("Google Identity Services ainda não carregado.");
+    }
+  }
+
+  static isAuthenticated(): boolean {
+    const token = localStorage.getItem("accessToken");
+    const exp = localStorage.getItem("accessTokenExpiresAt");
+    const isAuthenticated = !!token && !!exp && Date.now() < Number(exp);
+    console.log("isAuthenticated:", isAuthenticated);
+    return isAuthenticated;
+  }
+
+  static async authenticate(): Promise<void> {
+    const valid = await this.ensureValidToken();
+    if (!valid) {
+      await this.interactiveLogin();
+    }
+  }
+
+  private static async interactiveLogin(): Promise<void> {
+    return new Promise((resolve, reject) => {
       const tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
+        client_id: this.clientId,
         scope: SCOPES,
-        prompt: "consent", // ✅ Aqui está correto!
+        prompt: "consent",
         callback: async (res: TokenResponse) => {
           if (res.error) {
-            reject(res.error);
+            reject(new Error("Erro ao obter access token"));
             return;
           }
 
-          const accessToken = res.access_token;
+          this.storeCredentials(res.access_token, res.expires_in);
 
           try {
-            const userInfo = await GoogleAuthManager.fetchUserInfo(accessToken);
-
-            localStorage.setItem("accessToken", accessToken);
-            localStorage.setItem("user", JSON.stringify({
-              name: userInfo.name,
-              email: userInfo.email,
-              picture: userInfo.picture,
-              exp: Math.floor(Date.now() / 1000) + 3600 // 1 hora de validade
-            }));
-
+            const userInfo = await this.fetchUserInfo(res.access_token);
+            localStorage.setItem("user", JSON.stringify(userInfo));
             resolve();
-          } catch (err) {
-            reject("Erro ao obter dados do usuário: " + err);
+          } catch (error) {
+            reject(error);
           }
         }
       });
 
-      tokenClient.requestAccessToken(); // ✅ Sem argumentos
+      tokenClient.requestAccessToken();
     });
   }
 
-  private static async fetchUserInfo(accessToken: string) {
-    const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-      headers: {
-        Authorization: `Bearer ${accessToken}`
+private static async ensureValidToken(): Promise<boolean> {
+  if (this.isAuthenticated()) {
+    return true;
+  }
+
+  return new Promise((resolve) => {
+    const tokenClient = window.google.accounts.oauth2.initTokenClient({
+      client_id: this.clientId,
+      scope: SCOPES,
+      prompt: "", // silent
+      callback: async (res) => {
+        if (res.error || !res.access_token) {
+          resolve(false);
+        } else {
+          this.storeCredentials(res.access_token, res.expires_in);
+
+          // Se ainda não há informações do usuário salvas, busca agora
+          if (!localStorage.getItem("user")) {
+            try {
+              const userInfo = await this.fetchUserInfo(res.access_token);
+              localStorage.setItem("user", JSON.stringify(userInfo));
+            } catch (err) {
+              console.warn("Falha ao buscar informações do usuário no login silencioso:", err);
+            }
+          }
+
+          resolve(true);
+        }
       }
     });
 
-    if (!res.ok) throw new Error("Falha ao buscar dados do usuário");
+    tokenClient.requestAccessToken();
+  });
+}
 
-    return await res.json();
-  }
-
-  static getToken(): string | null {
-    return localStorage.getItem("accessToken");
+  static getAccessToken(): string {
+    const token = localStorage.getItem("accessToken");
+    if (!token) throw new Error("Token de acesso não encontrado.");
+    return token;
   }
 
   static getUser(): { name: string; email: string; picture: string } | null {
@@ -76,21 +109,28 @@ export class GoogleAuthManager {
     }
   }
 
-  static isAuthenticated(): boolean {
-    const userData = localStorage.getItem("user");
-    if (!userData) return false;
-
-    try {
-      const { exp } = JSON.parse(userData);
-      const now = Math.floor(Date.now() / 1000);
-      return exp > now;
-    } catch {
-      return false;
-    }
+  static logout(): void {
+    localStorage.removeItem("accessToken");
+    localStorage.removeItem("accessTokenExpiresAt");
+    localStorage.removeItem("user");
+    window.location.href = "/login.html";
   }
 
-  static logout(): void {
-    localStorage.clear();
-    navigateTo("/index.html");
+  private static storeCredentials(token: string, expiresIn?: number) {
+    localStorage.setItem("accessToken", token);
+    const expirationTime = Date.now() + (expiresIn || 3600) * 1000;
+    localStorage.setItem("accessTokenExpiresAt", expirationTime.toString());
+  }
+
+  private static async fetchUserInfo(accessToken: string): Promise<{ name: string; email: string; picture: string }> {
+    const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      }
+    });
+
+    if (!res.ok) throw new Error("Erro ao obter dados do usuário");
+
+    return res.json();
   }
 }

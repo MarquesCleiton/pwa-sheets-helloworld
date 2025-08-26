@@ -85,7 +85,7 @@ npm run dev
 
 ```bash
 npm run build
-npm run preview
+npm run preview -- --port=3000
 ```
 
 > Por padrão em [`http://localhost:4173`](http://localhost:4173)
