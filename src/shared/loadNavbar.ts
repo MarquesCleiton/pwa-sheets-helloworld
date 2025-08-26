@@ -29,5 +29,5 @@ export async function loadNavbar() {
   });
 
   document.body.appendChild(nav);
-  document.body.style.paddingBottom = "70px";
+  document.body.style.paddingBottom = "70px"; 
 }
