@@ -8,7 +8,10 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: 'index.html',
-        cadastro: 'src/presentation/pages/cadastro.html'
+        cadastro: 'src/presentation/pages/cadastro.html',
+        consulta: 'src/presentation/pages/consulta.html',
+        navbar: 'src/presentation/componentes/navbar.html',
+        
       }
     }
   },
