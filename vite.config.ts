@@ -19,7 +19,7 @@ export default defineConfig({
         cadastro: 'src/presentation/pages/cadastro.html',
         consulta: 'src/presentation/pages/consulta.html',
         editar:   'src/presentation/pages/editar.html',
-        // navbar:   'src/presentation/componentes/navbar.html',
+        navbar:   'src/presentation/componentes/navbar.html',
         // Se preferir com resolve():
         // main: resolve(__dirname, 'index.html'),
         // consulta: resolve(__dirname, 'src/presentation/pages/consulta.html'),
@@ -52,6 +52,7 @@ export default defineConfig({
           /\/pwa-sheets-helloworld\/src\/presentation\/pages\/consulta\.html/,
           /\/pwa-sheets-helloworld\/src\/presentation\/pages\/editar\.html/,
           /\/pwa-sheets-helloworld\/src\/presentation\/pages\/cadastro\.html/,
+          /\/pwa-sheets-helloworld\/src\/presentation\/componentes\/navbar\.html/,
         ],
       },
     })
