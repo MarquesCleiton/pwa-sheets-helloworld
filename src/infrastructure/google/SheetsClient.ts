@@ -1,3 +1,4 @@
+// src/infrastructure/google/SheetsClient.ts
 import { GoogleAuthManager } from "../auth/GoogleAuthManager";
 
 export class SheetsClient {
@@ -7,7 +8,12 @@ export class SheetsClient {
     this.sheetId = sheetId;
   }
 
+  // =========================================================
+  // ============== Autenticação (inalterado) ================
+  // =========================================================
+
   private async getAccessToken(): Promise<string> {
+    // Mantém o mesmo padrão de validação e reautenticação de token
     await GoogleAuthManager.authenticate();
     const token = GoogleAuthManager.getAccessToken();
     if (!token) throw new Error("Token de acesso inválido ou ausente.");
@@ -18,99 +24,240 @@ export class SheetsClient {
     const token = await this.getAccessToken();
     return {
       Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      Accept: "application/json",
     };
   }
 
-  private async request<T>(url: string, method: string = "GET", body?: any): Promise<T> {
+  /**
+   * Helper HTTP para chamadas à API do Google Sheets.
+   * - Mantém o padrão da sua versão anterior.
+   * - Agora lida graciosamente com respostas sem JSON (ex.: 204).
+   */
+  private async request<T = any>(url: string, method: string = "GET", body?: any): Promise<T> {
     const headers = await this.getHeadersInit();
 
     const res = await fetch(url, {
       method,
       headers,
-      body: body ? JSON.stringify(body) : undefined
+      body: body ? JSON.stringify(body) : undefined,
     });
 
     if (!res.ok) {
-      const error = await res.json().catch(() => ({}));
-      console.error("Erro na requisição ao Google Sheets:", error);
-      throw new Error(error.error?.message || "Erro desconhecido ao acessar o Google Sheets.");
+      let errorPayload: any = {};
+      try {
+        errorPayload = await res.json();
+      } catch {
+        // pode não haver corpo em erros específicos
+      }
+      console.error("Erro na requisição ao Google Sheets:", errorPayload);
+      throw new Error(errorPayload?.error?.message || `Erro ao acessar o Google Sheets (HTTP ${res.status}).`);
     }
 
-    return res.json();
+    // Pode ser 204 No Content ou content-type não JSON
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      try {
+        const text = await res.text();
+        return (text ? (JSON.parse(text) as T) : (undefined as unknown as T));
+      } catch {
+        return undefined as unknown as T;
+      }
+    }
+
+    return (await res.json()) as T;
   }
 
-  async getHeaders(sheetName: string): Promise<string[]> {
-    const range = `${sheetName}!A1:Z1`;
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${range}`;
-    const data = await this.request<{ values: string[][] }>(url);
-    return data.values?.[0] ?? [];
+  // =========================================================
+  // ===================== Leitura (READ) ====================
+  // =========================================================
+
+  /**
+   * Retorna todas as células preenchidas da aba como uma matriz (inclui a linha de cabeçalho).
+   * Ex.: [["ID","Nome","Email"],["1","Ana","ana@..."], ...]
+   */
+  async getSheetMatrix(sheetName: string): Promise<string[][]> {
+    // Em Values.get, o "range" pode ser apenas o nome da aba para pegar o intervalo usado
+    const range = encodeURIComponent(sheetName);
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${range}?majorDimension=ROWS`;
+    const res = await this.request<{ values?: string[][] }>(url, "GET");
+    return res.values ?? [];
   }
+
+  /**
+   * Cabeçalhos normalizados (primeira linha).
+   * Usa a primeira linha da matriz para evitar o limite "A1:Z1".
+   */
+  async getHeaders(sheetName: string): Promise<string[]> {
+    const matrix = await this.getSheetMatrix(sheetName);
+    if (matrix.length === 0) return [];
+    const headersRaw = matrix[0] ?? [];
+    return headersRaw.map((h, i) => {
+      const k = String(h ?? "").trim();
+      return k.length ? k : `col_${i + 1}`;
+    });
+  }
+
+  /**
+   * Lê todas as linhas como objetos (mapeando cabeçalhos) — compatível com seu cadastro.
+   * Mantida para retrocompatibilidade.
+   */
+  async getSheetObjects<T extends Record<string, any> = Record<string, any>>(sheetName: string): Promise<T[]> {
+    const matrix = await this.getSheetMatrix(sheetName);
+    if (matrix.length === 0) return [];
+
+    const headers = (matrix[0] ?? []).map((h, i) => {
+      const k = String(h ?? "").trim();
+      return k.length ? k : `col_${i + 1}`;
+    });
+
+    const rows = matrix.slice(1);
+    const out: T[] = [];
+
+    for (const row of rows) {
+      // Garante mesmo comprimento da linha que o cabeçalho
+      const normalized = row.slice(0, headers.length);
+      while (normalized.length < headers.length) normalized.push("");
+
+      const obj: Record<string, any> = {};
+      for (let i = 0; i < headers.length; i++) {
+        obj[headers[i]] = normalized[i] ?? "";
+      }
+
+      // Se a linha estiver totalmente vazia, ignora (opcional)
+      const isEmpty = Object.values(obj).every(v => String(v ?? "").trim().length === 0);
+      if (!isEmpty) out.push(obj as T);
+    }
+
+    return out;
+  }
+
+  /**
+   * Lê a aba como objetos e DEVOLVE o índice da linha (0-based) + rowNumberA1 (1-based).
+   * Não filtra linhas “apagadas” (só com "-"); quem chama decide.
+   */
+  async getObjectsWithIndex<T extends Record<string, any> = Record<string, any>>(
+    sheetName: string
+  ): Promise<Array<{ rowIndex: number; rowNumberA1: number; object: T }>> {
+    const matrix = await this.getSheetMatrix(sheetName);
+    if (matrix.length === 0) return [];
+
+    const headers = await this.getHeaders(sheetName);
+    const out: Array<{ rowIndex: number; rowNumberA1: number; object: T }> = [];
+
+    for (let i = 1; i < matrix.length; i++) {
+      const row = matrix[i] ?? [];
+      const normalized = row.slice(0, headers.length);
+      while (normalized.length < headers.length) normalized.push("");
+
+      const obj: Record<string, any> = {};
+      headers.forEach((h, j) => (obj[h] = normalized[j] ?? ""));
+
+      out.push({ rowIndex: i, rowNumberA1: i + 1, object: obj as T });
+    }
+
+    return out;
+  }
+
+  // =========================================================
+  // ================== Criação (APPEND) =====================
+  // =========================================================
 
   private mapObjectToRow(obj: Record<string, string>, headers: string[]): string[] {
     return headers.map(header => obj[header] ?? "");
   }
 
+  /**
+   * Anexa uma linha ao final da aba, usando os cabeçalhos como referência.
+   * Mantida para o seu fluxo de cadastro.
+   */
   async appendRowByHeader(sheetName: string, data: Record<string, string>): Promise<void> {
     const headers = await this.getHeaders(sheetName);
     if (headers.length === 0) throw new Error("Cabeçalhos não encontrados na planilha.");
 
     const values = [this.mapObjectToRow(data, headers)];
     const range = `${sheetName}!A1`;
-
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${range}:append?valueInputOption=RAW`;
-
     await this.request(url, "POST", { values });
   }
 
-  /**
- * Retorna todas as células preenchidas da aba como uma matriz (inclui a linha de cabeçalho).
- * Ex.: [["ID","Nome","Email"],["1","Ana","ana@..."], ...]
- */
-async getSheetMatrix(sheetName: string): Promise<string[][]> {
-  // Em Values.get, o "range" pode ser apenas o nome da aba para pegar o intervalo usado
-  const range = encodeURIComponent(sheetName);
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${range}?majorDimension=ROWS`;
-  const res = await this.request<{ values?: string[][] }>(url, "GET");
-  return res.values ?? [];
-}
+  // =========================================================
+  // ======= Atualização por índice & Soft Delete ============
+  // =========================================================
 
-/**
- * Retorna todas as linhas da aba como objetos, usando a primeira linha como cabeçalho.
- * Ex.: [{ ID:"1", Nome:"Ana", Email:"ana@..." }, ...]
- * - Linhas menores que o cabeçalho são preenchidas com "".
- * - Colunas extras são preservadas como chaves adicionais.
- */
-async getSheetObjects<T extends Record<string, any> = Record<string, any>>(sheetName: string): Promise<T[]> {
-  const matrix = await this.getSheetMatrix(sheetName);
-  if (matrix.length === 0) return [];
-
-  const headersRaw = matrix[0] ?? [];
-  // Normaliza cabeçalhos: trim e substitui vazios por "col_X"
-  const headers = headersRaw.map((h, i) => {
-    const k = String(h ?? "").trim();
-    return k.length ? k : `col_${i + 1}`;
-  });
-
-  const rows = matrix.slice(1);
-  const out: T[] = [];
-
-  for (const row of rows) {
-    // Garante mesmo comprimento da linha que o cabeçalho
-    const normalized = row.slice(0, headers.length);
-    while (normalized.length < headers.length) normalized.push("");
-
-    const obj: Record<string, any> = {};
-    for (let i = 0; i < headers.length; i++) {
-      obj[headers[i]] = normalized[i] ?? "";
+  /** Converte índice de coluna (0-based) para rótulo A1 (A, B, ..., Z, AA, AB, ...). */
+  private colToA1(n: number): string {
+    let s = "", x = n;
+    while (x >= 0) {
+      s = String.fromCharCode((x % 26) + 65) + s;
+      x = Math.floor(x / 26) - 1;
     }
-
-    // Se a linha estiver totalmente vazia, ignora (opcional)
-    const isEmpty = Object.values(obj).every(v => (String(v ?? "").trim().length === 0));
-    if (!isEmpty) out.push(obj as T);
+    return s;
   }
 
-  return out;
-}
+  /**
+   * Atualiza a linha indicada por rowIndex (overlay de 'data' sobre a linha original).
+   * - 'rowIndex' é OBRIGATÓRIO e deve ser >= 1 (0 é o cabeçalho).
+   * - As chaves de 'data' devem bater com os cabeçalhos (exatamente o texto do cabeçalho).
+   * - Colunas não presentes em 'data' são preservadas.
+   */
+  async updateRowByIndex(
+    sheetName: string,
+    rowIndex: number,
+    data: Record<string, string>
+  ): Promise<void> {
+    if (!Number.isInteger(rowIndex) || rowIndex < 1) {
+      throw new Error("rowIndex inválido (0 é cabeçalho; use >= 1).");
+    }
 
+    const matrix  = await this.getSheetMatrix(sheetName);
+    const headers = await this.getHeaders(sheetName);
+
+    if (matrix.length === 0 || headers.length === 0) {
+      throw new Error(`Aba "${sheetName}" vazia.`);
+    }
+    if (rowIndex >= matrix.length) {
+      throw new Error(`rowIndex ${rowIndex} fora dos limites da aba "${sheetName}".`);
+    }
+
+    const original = matrix[rowIndex] ?? [];
+    const outRow: string[] = headers.map((h, i) => {
+      const has = Object.prototype.hasOwnProperty.call(data, h);
+      return has ? String(data[h] ?? "") : String(original[i] ?? "");
+    });
+
+    const lastColA1 = this.colToA1(headers.length - 1);
+    const a1 = `${sheetName}!A${rowIndex + 1}:${lastColA1}${rowIndex + 1}`;
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${encodeURIComponent(a1)}?valueInputOption=USER_ENTERED`;
+
+    await this.request(url, "PUT", { range: a1, majorDimension: "ROWS", values: [outRow] });
+  }
+
+  /**
+   * "Exclusão" lógica: preenche TODAS as células da linha com "-" (mantém integridade/contagem).
+   * - 'rowIndex' é OBRIGATÓRIO e deve ser >= 1 (0 é o cabeçalho).
+   */
+  async softDeleteRowByIndex(sheetName: string, rowIndex: number): Promise<void> {
+    if (!Number.isInteger(rowIndex) || rowIndex < 1) {
+      throw new Error("rowIndex inválido (0 é cabeçalho; use >= 1).");
+    }
+
+    const headers = await this.getHeaders(sheetName);
+    const matrix  = await this.getSheetMatrix(sheetName);
+
+    if (matrix.length === 0 || headers.length === 0) {
+      throw new Error(`Aba "${sheetName}" vazia.`);
+    }
+    if (rowIndex >= matrix.length) {
+      throw new Error(`rowIndex ${rowIndex} fora dos limites da aba "${sheetName}".`);
+    }
+
+    const dashRow = headers.map(() => "-");
+
+    const lastColA1 = this.colToA1(headers.length - 1);
+    const a1 = `${sheetName}!A${rowIndex + 1}:${lastColA1}${rowIndex + 1}`;
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${encodeURIComponent(a1)}?valueInputOption=USER_ENTERED`;
+
+    await this.request(url, "PUT", { range: a1, majorDimension: "ROWS", values: [dashRow] });
+  }
 }
