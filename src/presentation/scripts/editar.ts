@@ -12,6 +12,38 @@ const show = (msg: string, type: "success" | "warning" | "danger" = "warning") =
   el.classList.remove("d-none");
 };
 
+/** ====== Auto-expand (altura máx + scrollbar) ======
+ *  Uso: const obsAuto = initAutoExpand("#observacoes", 320);
+ *       obsAuto?.resize() após setar .value via código.
+ */
+type AutoExpandCtl = { resize: () => void };
+function initAutoExpand(selector: string, maxHeightPx = 320): AutoExpandCtl | null {
+  const ta = document.querySelector<HTMLTextAreaElement>(selector);
+  if (!ta) return null;
+
+  const apply = () => {
+    ta.style.height = "auto";
+    const h = ta.scrollHeight;
+    if (h > maxHeightPx) {
+      ta.style.height = `${maxHeightPx}px`;
+      ta.style.overflowY = "auto";
+    } else {
+      ta.style.height = `${h}px`;
+      ta.style.overflowY = "hidden";
+    }
+  };
+
+  // Enquanto digita e ao redimensionar a janela
+  ta.addEventListener("input", apply);
+  window.addEventListener("resize", apply);
+
+  // Ajustes iniciais para evitar "pulo" no primeiro paint
+  requestAnimationFrame(apply);
+  setTimeout(apply, 100);
+
+  return { resize: apply };
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   const params   = new URLSearchParams(location.search);
   const tab      = params.get("tab") || "Cadastro";
@@ -25,6 +57,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   const inputObs  = $("#observacoes") as HTMLTextAreaElement | null;
   const form      = $("#form") as HTMLFormElement | null;
 
+  // Auto-expand (altura máx 320px; ajuste se quiser)
+  const obsAuto = initAutoExpand("#observacoes", 320);
+
   // Contexto
   if (inputTab) inputTab.value = tab;
   if (inputIdx) inputIdx.value = String(rowIndex);
@@ -35,9 +70,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!Number.isInteger(rowIndex) || rowIndex < 1) {
       throw new Error("rowIndex inválido para edição (use >= 1).");
     }
-
-    // Autentica (segue seu padrão)
-    await GoogleAuthManager.authenticate();
 
     // Busca a linha alvo (usando a leitura com índice)
     const rows = await client.getObjectsWithIndex<Record<string, string>>(tab);
@@ -56,7 +88,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (inputNome) inputNome.value = String(nome);
     if (inputMail) inputMail.value = String(email);
-    if (inputObs)  inputObs.value  = String(observacoes);
+    if (inputObs)  {
+      inputObs.value = String(observacoes);
+      // Redimensiona após carregar o conteúdo
+      obsAuto?.resize();
+    }
   } catch (e: any) {
     show(e?.message || "Erro ao carregar registro para edição.", "danger");
   }
@@ -66,8 +102,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     ev.preventDefault();
 
     try {
-      await GoogleAuthManager.authenticate();
-
       // Descobre os nomes EXATOS das colunas na planilha
       const headers = await client.getHeaders(tab);
 
