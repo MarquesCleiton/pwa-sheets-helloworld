@@ -73,9 +73,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   };
 
   const irParaEdicao = (rowIndex: number) => {
-    const url = new URL(baseurl?.("/src/presentation/pages/editar.html") || "/src/presentation/pages/editar.html", window.location.origin);
+    const url = new URL(baseurl?.("src/presentation/pages/editar.html"), window.location.origin);
     url.searchParams.set("tab", SHEET_TAB);
     url.searchParams.set("rowIndex", String(rowIndex));
+    console.log(url.toString())
     window.location.href = url.toString();
   };
 
