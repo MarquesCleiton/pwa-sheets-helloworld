@@ -13,7 +13,6 @@ export class GoogleAuthManager {
     const token = localStorage.getItem("accessToken");
     const exp = localStorage.getItem("accessTokenExpiresAt");
     const isAuthenticated = !!token && !!exp && Date.now() < Number(exp);
-    console.log("isAuthenticated:", isAuthenticated);
     return isAuthenticated;
   }
 

@@ -1,6 +1,6 @@
 import { SheetsClient } from "../../infrastructure/google/SheetsClient";
 import { GoogleAuthManager } from "../../infrastructure/auth/GoogleAuthManager";
-import { baseurl } from "../../utils/navigation"; // se não tiver, pode remover e usar "./consulta.html"
+// import { baseurl } from "../../utils/navigation"; // se não tiver, pode remover e usar "./consulta.html"
 
 const $ = (s: string) => document.querySelector(s) as HTMLElement | null;
 
@@ -33,11 +33,10 @@ function initAutoExpand(selector: string, maxHeightPx = 320): AutoExpandCtl | nu
     }
   };
 
-  // Enquanto digita e ao redimensionar a janela
   ta.addEventListener("input", apply);
   window.addEventListener("resize", apply);
 
-  // Ajustes iniciais para evitar "pulo" no primeiro paint
+  // ajuste inicial (evita "pulo")
   requestAnimationFrame(apply);
   setTimeout(apply, 100);
 
@@ -71,10 +70,11 @@ document.addEventListener("DOMContentLoaded", async () => {
       throw new Error("rowIndex inválido para edição (use >= 1).");
     }
 
-    // Busca a linha alvo (usando a leitura com índice)
-    const rows = await client.getObjectsWithIndex<Record<string, string>>(tab);
-    const alvo = rows.find(r => r.rowIndex === rowIndex)?.object;
-    if (!alvo) throw new Error("Registro não encontrado para o rowIndex informado.");
+    // ✅ Novo: busca APENAS a linha necessária
+    const result = await client.getObjectByIndex<Record<string, string>>(tab, rowIndex);
+    if (!result) throw new Error("Registro não encontrado para o rowIndex informado.");
+
+    const alvo = result.object;
 
     // Preenche o formulário (tolerando Observações/Observacoes)
     const nome = alvo["Nome"] ?? (alvo as any)?.nome ?? "";
@@ -90,11 +90,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (inputMail) inputMail.value = String(email);
     if (inputObs)  {
       inputObs.value = String(observacoes);
-      // Redimensiona após carregar o conteúdo
-      obsAuto?.resize();
+      obsAuto?.resize(); // garante redimensionamento pós-carregamento
     }
-  } catch (e: any) {
-    show(e?.message || "Erro ao carregar registro para edição.", "danger");
+  } catch (e: unknown) {
+    const err = e as { message?: string };
+    show(err?.message || "Erro ao carregar registro para edição.", "danger");
   }
 
   // Salvar (update por índice)
@@ -104,17 +104,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       // Descobre os nomes EXATOS das colunas na planilha
       const headers = await client.getHeaders(tab);
+      if (!headers.length) throw new Error("Cabeçalhos não encontrados.");
 
       // Helper para recuperar o cabeçalho correto (case/acentos)
       const findHeader = (target: "Nome" | "Email" | "Observacoes"): string => {
         const lower = headers.map(h => h.toLowerCase());
         if (target === "Observacoes") {
-          const i = lower.findIndex(h => h.startsWith("observa")); // Observações/Observacoes
+          const i = lower.findIndex(h => hstartsWithObserva(h)); // Observações/Observacoes
           return i >= 0 ? headers[i] : "Observacoes";
         }
         const i = lower.indexOf(target.toLowerCase());
         return i >= 0 ? headers[i] : target;
       };
+
+      // mini helper só para legibilidade
+      const hstartsWithObserva = (h: string) => h.startsWith("observa");
 
       const data: Record<string, string> = {};
       if (inputNome) data[findHeader("Nome")] = (inputNome.value || "").trim();
@@ -126,8 +130,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       // (Opcional) voltar para consulta após salvar
       // setTimeout(() => window.location.href = baseurl?.("/src/presentation/pages/consulta.html") || "./consulta.html", 600);
-    } catch (e: any) {
-      show(e?.message || "Erro ao salvar alterações.", "danger");
+    } catch (e: unknown) {
+      const err = e as { message?: string };
+      show(err?.message || "Erro ao salvar alterações.", "danger");
     }
   });
 });

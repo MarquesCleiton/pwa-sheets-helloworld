@@ -8,12 +8,45 @@ export class SheetsClient {
     this.sheetId = sheetId;
   }
 
+  /** Lê um ÚNICO registro pelo rowIndex (0 = cabeçalho; use >= 1 para dados).
+ *  Retorna { rowIndex, rowNumberA1, object } ou null se a linha não existir.
+ */
+  async getObjectByIndex<T extends Record<string, string> = Record<string, string>>(
+    sheetName: string,
+    rowIndex: number
+  ): Promise<{ rowIndex: number; rowNumberA1: number; object: T } | null> {
+    if (!Number.isInteger(rowIndex) || rowIndex < 1) {
+      throw new Error("rowIndex inválido (0 é o cabeçalho; use >= 1).");
+    }
+
+    // Cabeçalhos para definir a ordem/quantidade de colunas
+    const headers = await this.getHeaders(sheetName);
+    if (headers.length === 0) throw new Error(`Cabeçalho da aba "${sheetName}" não encontrado.`);
+
+    // Lê só a linha alvo (sem varrer toda a planilha)
+    const row = await this.getRowArrayByIndex(sheetName, rowIndex);
+    if (!row) return null; // inexistente ou completamente vazia
+
+    // Normaliza o tamanho da linha ao tamanho dos cabeçalhos
+    const normalized = row.slice(0, headers.length);
+    while (normalized.length < headers.length) normalized.push("");
+
+    const obj: Record<string, string> = {};
+    headers.forEach((h, i) => { obj[h] = String(normalized[i] ?? ""); });
+
+    return {
+      rowIndex,
+      rowNumberA1: rowIndex + 1,
+      object: obj as T,
+    };
+  }
+
   // =========================================================
   // ============== Autenticação (inalterado) ================
   // =========================================================
 
   private async getAccessToken(): Promise<string> {
-    // Mantém o mesmo padrão de validação e reautenticação de token
+    // Mantém o mesmo padrão de validação e reautenticação de token (projeto atual)
     await GoogleAuthManager.authenticate();
     const token = GoogleAuthManager.getAccessToken();
     if (!token) throw new Error("Token de acesso inválido ou ausente.");
@@ -32,7 +65,7 @@ export class SheetsClient {
   /**
    * Helper HTTP para chamadas à API do Google Sheets.
    * - Mantém o padrão da sua versão anterior.
-   * - Agora lida graciosamente com respostas sem JSON (ex.: 204).
+   * - Lida graciosamente com respostas sem JSON (ex.: 204).
    */
   private async request<T = any>(url: string, method: string = "GET", body?: any): Promise<T> {
     const headers = await this.getHeadersInit();
@@ -169,7 +202,7 @@ export class SheetsClient {
 
   /**
    * Anexa uma linha ao final da aba, usando os cabeçalhos como referência.
-   * Mantida para o seu fluxo de cadastro.
+   * Mantida para o seu fluxo de cadastro (genérico).
    */
   async appendRowByHeader(sheetName: string, data: Record<string, string>): Promise<void> {
     const headers = await this.getHeaders(sheetName);
@@ -177,7 +210,7 @@ export class SheetsClient {
 
     const values = [this.mapObjectToRow(data, headers)];
     const range = `${sheetName}!A1`;
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${range}:append?valueInputOption=RAW`;
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW`;
     await this.request(url, "POST", { values });
   }
 
@@ -196,10 +229,29 @@ export class SheetsClient {
   }
 
   /**
+   * Lê rapidamente apenas a linha alvo (A{row}:{lastCol}{row}).
+   * Retorna null se a linha estiver completamente vazia.
+   */
+  private async getRowArrayByIndex(sheetName: string, rowIndex: number): Promise<string[] | null> {
+    const headers = await this.getHeaders(sheetName);
+    if (headers.length === 0) return null;
+
+    const lastColA1 = this.colToA1(headers.length - 1);
+    const a1 = `${sheetName}!A${rowIndex + 1}:${lastColA1}${rowIndex + 1}`;
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${encodeURIComponent(a1)}?majorDimension=ROWS`;
+    const data = await this.request<{ values?: string[][] }>(url, "GET");
+
+    const row = data.values?.[0] ?? [];
+    const allEmpty = row.length === 0 || row.every(c => c === "" || c == null);
+    return allEmpty ? null : row.map(v => (v ?? "").toString());
+  }
+
+  /**
    * Atualiza a linha indicada por rowIndex (overlay de 'data' sobre a linha original).
    * - 'rowIndex' é OBRIGATÓRIO e deve ser >= 1 (0 é o cabeçalho).
    * - As chaves de 'data' devem bater com os cabeçalhos (exatamente o texto do cabeçalho).
    * - Colunas não presentes em 'data' são preservadas.
+   * - Envia na ORDEM DO CABEÇALHO, independente da ordem das chaves em 'data'.
    */
   async updateRowByIndex(
     sheetName: string,
@@ -210,17 +262,16 @@ export class SheetsClient {
       throw new Error("rowIndex inválido (0 é cabeçalho; use >= 1).");
     }
 
-    const matrix  = await this.getSheetMatrix(sheetName);
     const headers = await this.getHeaders(sheetName);
+    if (headers.length === 0) throw new Error(`Cabeçalho da aba "${sheetName}" não encontrado.`);
 
-    if (matrix.length === 0 || headers.length === 0) {
-      throw new Error(`Aba "${sheetName}" vazia.`);
-    }
-    if (rowIndex >= matrix.length) {
-      throw new Error(`rowIndex ${rowIndex} fora dos limites da aba "${sheetName}".`);
+    // Lê apenas a linha alvo para validar existência e preservar colunas não enviadas
+    const original = await this.getRowArrayByIndex(sheetName, rowIndex);
+    if (!original) {
+      throw new Error(`Linha ${rowIndex} não existe (ou está totalmente vazia).`);
     }
 
-    const original = matrix[rowIndex] ?? [];
+    // Monta a linha final respeitando a ordem do cabeçalho
     const outRow: string[] = headers.map((h, i) => {
       const has = Object.prototype.hasOwnProperty.call(data, h);
       return has ? String(data[h] ?? "") : String(original[i] ?? "");
@@ -235,7 +286,7 @@ export class SheetsClient {
 
   /**
    * "Exclusão" lógica: preenche TODAS as células da linha com "-" (mantém integridade/contagem).
-   * - 'rowIndex' é OBRIGATÓRIO e deve ser >= 1 (0 é o cabeçalho).
+   * - 'rowIndex' é OBRIGATÓRIO e deve ser >= 1 (0 é cabeçalho).
    */
   async softDeleteRowByIndex(sheetName: string, rowIndex: number): Promise<void> {
     if (!Number.isInteger(rowIndex) || rowIndex < 1) {
@@ -243,13 +294,12 @@ export class SheetsClient {
     }
 
     const headers = await this.getHeaders(sheetName);
-    const matrix  = await this.getSheetMatrix(sheetName);
+    if (headers.length === 0) throw new Error(`Cabeçalho da aba "${sheetName}" não encontrado.`);
 
-    if (matrix.length === 0 || headers.length === 0) {
-      throw new Error(`Aba "${sheetName}" vazia.`);
-    }
-    if (rowIndex >= matrix.length) {
-      throw new Error(`rowIndex ${rowIndex} fora dos limites da aba "${sheetName}".`);
+    // valida existência da linha de forma pontual
+    const exists = await this.getRowArrayByIndex(sheetName, rowIndex);
+    if (!exists) {
+      throw new Error(`Linha ${rowIndex} não existe (ou está totalmente vazia).`);
     }
 
     const dashRow = headers.map(() => "-");

@@ -1,172 +1,205 @@
-// src/presentation/pages/consulta.ts
 import { SheetsClient } from "../../infrastructure/google/SheetsClient";
-import { GoogleAuthManager } from "../../infrastructure/auth/GoogleAuthManager";
-import { loadNavbar } from "../../shared/loadNavbar";         // se não existir, remova
-import { baseurl } from "../../utils/navigation";            // se não existir, use caminho estático
+import { loadNavbar } from "../../shared/loadNavbar";
 
-const SHEET_TAB = "Cadastro";
+type Row = { rowIndex: number; object: Record<string, string> };
 
-const $  = (s: string) => document.querySelector(s) as HTMLElement | null;
+// ---------- Config ----------
+const DEFAULT_TAB = "Cadastro"; // pode alterar via ?tab= na URL
+const REFRESH_MS = 30_000;
 
-const strip = (s: string) => {
-  if (!s) return "";
-  try { return s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().trim(); }
-  catch { return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim(); }
-};
+// ---------- DOM ----------
+const $ = <T extends HTMLElement = HTMLElement>(sel: string) =>
+  document.querySelector(sel) as T | null;
 
-document.addEventListener("DOMContentLoaded", async () => {
-  // Navbar global (se tiver)
-  try { await (loadNavbar?.()); } catch {}
+const params = new URLSearchParams(window.location.search);
+const tab: string = params.get("tab") || DEFAULT_TAB;
 
-  const tbody        = $("#tbody") as HTMLTableSectionElement | null;
-  const inputFiltro  = $("#q") as HTMLInputElement | null;
-  const btnAtualizar = $("#btnAtualizar") as HTMLButtonElement | null;
-  const btnSair      = $("#btnSair") as HTMLButtonElement | null;
-  const alertBox     = $("#alert") as HTMLDivElement | null;
+const tbody = $("#tbody") as HTMLTableSectionElement | null;
+const inputQ = $("#q") as HTMLInputElement | null;
+const btnAtualizar = $("#btnAtualizar") as HTMLButtonElement | null;
+const btnSair = $("#btnSair") as HTMLButtonElement | null;
+const alertBox = $("#alert") as HTMLDivElement | null;
 
+// ---------- Utils ----------
+function showAlert(msg: string, type: "success" | "warning" | "danger" = "warning"): void {
+  if (!alertBox) return;
+  alertBox.className = `alert alert-${type}`;
+  alertBox.textContent = msg;
+  alertBox.classList.remove("d-none");
+}
+function clearAlert(): void {
+  alertBox?.classList.add("d-none");
+}
+
+function esc(s: string): string {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+// Linha é soft-deleted quando TODAS as colunas estão com "-"
+function isSoftDeleted(obj: Record<string, string>): boolean {
+  const vals = Object.values(obj);
+  return vals.length > 0 && vals.every((v) => String(v).trim() === "-");
+}
+
+// ---------- Estado ----------
+const client = new SheetsClient();
+let cache: Row[] = [];
+let busy = false;
+let refreshTimer: number | null = null;
+
+// ---------- Render ----------
+function render(rows: Row[]): void {
   if (!tbody) return;
 
-  const showAlert = (m: string, cls: "warning"|"success"|"danger"="warning") => {
-    if (!alertBox) return;
-    alertBox.className = `alert alert-${cls}`;
-    alertBox.textContent = m;
-    alertBox.classList.remove("d-none");
-  };
-  const hideAlert = () => alertBox?.classList.add("d-none");
-  const setLoading = (l: boolean) => {
-    if (btnAtualizar) { btnAtualizar.disabled = l; btnAtualizar.textContent = l ? "Carregando..." : "Atualizar"; }
-  };
+  if (!rows.length) {
+    tbody.innerHTML = `
+      <tr><td colspan="4" class="text-center text-muted py-4">Nenhum registro encontrado.</td></tr>
+    `;
+    return;
+  }
 
-  type Linha = { Nome?: string; Email?: string; Observacoes?: string; ["Observações"]?: string };
-  type RowUI = { rowIndex: number; nome: string; email: string; observacoes: string };
+  tbody.innerHTML = rows
+    .map(({ rowIndex, object }: Row) => {
+      const nome = object["Nome"] ?? "";
+      const email = object["Email"] ?? "";
+      const obs = object["Observações"] ?? object["Observacoes"] ?? "";
 
-  let dados: RowUI[] = [];
-  const client = new SheetsClient();
-  const auth   = new GoogleAuthManager();
+      const hrefEditar = `./editar.html?tab=${encodeURIComponent(tab)}&rowIndex=${rowIndex}`;
 
-  const carregar = async () => {
-    hideAlert();
-    setLoading(true);
-    try {
-      const linhas = await client.getObjectsWithIndex<Linha>(SHEET_TAB);
-      dados = (linhas || []).map(({ rowIndex, object }) => {
-        const nome = (object.Nome ?? (object as any)?.nome ?? "") as string;
-        const email = (object.Email ?? (object as any)?.email ?? "") as string;
-        const obs =
-          (object.Observacoes ??
-            object["Observações"] ??
-            (object as any)?.observacoes ??
-            (object as any)?.observações ??
-            "") as string;
+      return `
+        <tr data-row-index="${rowIndex}">
+          <td>${esc(nome)}</td>
+          <td>${esc(email)}</td>
+          <td class="text-truncate" style="max-width: 420px;">${esc(obs)}</td>
+          <td class="text-end">
+            <div class="d-inline-flex gap-1">
+              <a class="btn btn-sm btn-outline-primary" href="${hrefEditar}" title="Editar">
+                <i class="bi bi-pencil"></i>
+              </a>
+              <button
+                class="btn btn-sm btn-outline-danger"
+                data-action="delete"
+                data-row-index="${rowIndex}"
+                title="Excluir"
+              >
+                <i class="bi bi-trash"></i>
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+}
 
-        return { rowIndex, nome, email, observacoes: obs };
-      })
-      // Esconde linhas "apagadas" (só com "-")
-      .filter(r => [r.nome, r.email, r.observacoes].some(v => String(v).trim() !== "-"));
+// Aplica filtro no cache e re-renderiza
+function applyFilter(): void {
+  const q = (inputQ?.value || "").trim().toLowerCase();
+  const visible: Row[] = cache
+    .filter((r: Row) => !isSoftDeleted(r.object))
+    .filter(({ object }: Row) => {
+      if (!q) return true;
+      const nome = String(object["Nome"] ?? "").toLowerCase();
+      const email = String(object["Email"] ?? "").toLowerCase();
+      const obs = String(object["Observações"] ?? object["Observacoes"] ?? "").toLowerCase();
+      return nome.includes(q) || email.includes(q) || obs.includes(q);
+    });
 
-      render();
-    } catch (e: any) {
-      showAlert(e?.message || "Não foi possível carregar os usuários.", "danger");
-    } finally {
-      setLoading(false);
-    }
-  };
+  render(visible);
+}
 
-  const irParaEdicao = (rowIndex: number) => {
-    const url = new URL(baseurl?.("src/presentation/pages/editar.html"), window.location.origin);
-    url.searchParams.set("tab", SHEET_TAB);
-    url.searchParams.set("rowIndex", String(rowIndex));
-    console.log(url.toString())
-    window.location.href = url.toString();
-  };
+// ---------- Data ----------
+async function load(): Promise<void> {
+  clearAlert();
+  try {
+    const rows: Array<{ rowIndex: number; rowNumberA1: number; object: Record<string, string> }> =
+      await client.getObjectsWithIndex<Record<string, string>>(tab);
 
-  const excluir = async (rowIndex: number) => {
-    if (rowIndex < 1) return showAlert("rowIndex inválido para exclusão.", "danger");
-    if (!confirm("Marcar esta linha como excluída? (os campos serão substituídos por '-')")) return;
+    // normaliza para { rowIndex, object }
+    cache = rows.map((r): Row => ({ rowIndex: r.rowIndex, object: r.object }));
+    applyFilter();
+  } catch (e: unknown) {
+    const err = e as { message?: string };
+    console.error("Erro ao carregar:", err?.message || e);
+    showAlert(err?.message || "Erro ao carregar dados.", "danger");
+    cache = [];
+    applyFilter();
+  }
+}
 
-    setLoading(true);
-    try {
-      await client.softDeleteRowByIndex(SHEET_TAB, rowIndex);
-      dados = dados.filter(d => d.rowIndex !== rowIndex);
-      render();
-      showAlert("Linha marcada como excluída.", "success");
-    } catch (e: any) {
-      showAlert(e?.message || "Erro ao excluir.", "danger");
-    } finally {
-      setLoading(false);
-    }
-  };
+async function softDelete(rowIndex: number): Promise<void> {
+  if (!Number.isInteger(rowIndex) || rowIndex < 1) return;
+  const ok = window.confirm(`Confirmar exclusão (soft delete) da linha ${rowIndex}?`);
+  if (!ok) return;
+  try {
+    await client.softDeleteRowByIndex(tab, rowIndex);
+    await load();
+  } catch (e: unknown) {
+    const err = e as { message?: string };
+    console.error("Erro ao excluir:", err?.message || e);
+    showAlert(err?.message || "Erro ao excluir.", "danger");
+  }
+}
 
-  const render = () => {
-    if (!tbody) return;
-    tbody.innerHTML = "";
-
-    if (!dados.length) {
-      showAlert('Nenhum usuário encontrado na aba "Cadastro".');
-      return;
-    }
-
-    const q = strip(inputFiltro?.value || "");
-    const lista = q
-      ? dados.filter(d =>
-          strip(d.nome).includes(q) ||
-          strip(d.email).includes(q) ||
-          strip(d.observacoes).includes(q)
-        )
-      : dados;
-
-    for (const r of lista) {
-      const tr = document.createElement("tr");
-
-      const tdNome = document.createElement("td");
-      tdNome.textContent = r.nome || "—";
-
-      const tdEmail = document.createElement("td");
-      tdEmail.textContent = r.email || "—";
-
-      const tdObs = document.createElement("td");
-      tdObs.textContent = r.observacoes || "—";
-
-      const tdAcoes = document.createElement("td");
-      tdAcoes.className = "text-end";
-
-      // ==== AÇÕES COM ÍCONES, LADO A LADO ====
-      const actions = document.createElement("div");
-      actions.className = "d-inline-flex align-items-center gap-1";
-
-      const btnEditar = document.createElement("button");
-      btnEditar.type = "button";
-      btnEditar.className = "btn btn-outline-primary btn-sm";
-      btnEditar.setAttribute("aria-label", "Editar");
-      btnEditar.innerHTML = `<i class="bi bi-pencil-square"></i><span class="visually-hidden">Editar</span>`;
-      btnEditar.addEventListener("click", () => irParaEdicao(r.rowIndex));
-
-      const btnExcluir = document.createElement("button");
-      btnExcluir.type = "button";
-      btnExcluir.className = "btn btn-outline-danger btn-sm";
-      btnExcluir.setAttribute("aria-label", "Excluir");
-      btnExcluir.innerHTML = `<i class="bi bi-trash"></i><span class="visually-hidden">Excluir</span>`;
-      btnExcluir.addEventListener("click", () => excluir(r.rowIndex));
-
-      actions.appendChild(btnEditar);
-      actions.appendChild(btnExcluir);
-      tdAcoes.appendChild(actions);
-      // =======================================
-
-      tr.appendChild(tdNome);
-      tr.appendChild(tdEmail);
-      tr.appendChild(tdObs);
-      tr.appendChild(tdAcoes);
-      tbody.appendChild(tr);
-    }
-  };
-
-  btnAtualizar?.addEventListener("click", carregar);
-  inputFiltro?.addEventListener("input", () => render());
-  btnSair?.addEventListener("click", async () => {
-    await GoogleAuthManager.logout?.();
-    location.reload();
-  });
-
-  carregar();
+// ---------- Eventos ----------
+tbody?.addEventListener("click", (ev: MouseEvent) => {
+  const tgt = ev.target as HTMLElement;
+  const btn = tgt.closest<HTMLButtonElement>('button[data-action="delete"]');
+  if (!btn) return;
+  const idxAttr = btn.getAttribute("data-row-index");
+  const idx = idxAttr ? Number(idxAttr) : NaN;
+  void softDelete(idx);
 });
+
+inputQ?.addEventListener("input", () => applyFilter());
+
+btnAtualizar?.addEventListener("click", () => {
+  void load();
+});
+
+// (opcional) ajuste logout conforme sua app
+btnSair?.addEventListener("click", () => {
+  try {
+    localStorage.removeItem("user");
+    localStorage.removeItem("accessToken");
+  } catch {
+    // ignore
+  }
+  window.location.href = "../../index.html"; // ajuste se seu path base for diferente
+});
+
+// ---------- Auto-refresh 30s (sem reload) ----------
+function startAutoRefresh(): void {
+  // 1ª carga
+  void load();
+
+  refreshTimer = window.setInterval(async () => {
+    if (document.visibilityState !== "visible" || busy) return;
+    busy = true;
+    try {
+      await load();
+    } finally {
+      busy = false;
+    }
+  }, REFRESH_MS);
+
+  // ao voltar para a aba, força uma atualização
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !busy) {
+      void load();
+    }
+  });
+}
+
+// ---------- Boot ----------
+document.addEventListener("DOMContentLoaded", () => {
+  loadNavbar();
+  startAutoRefresh();
+});
+
+export {};
