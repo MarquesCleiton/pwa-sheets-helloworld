@@ -160,10 +160,10 @@ form?.addEventListener("submit", async (ev) => {
 
     showAlert("Cadastro criado com sucesso!", "success");
     setStatus("Cadastro criado com sucesso!");
-
+    await sheets.upsertMeta(TAB)
     // opcional: limpar imagem e manter UX do bloco AppSheet
-    // clearImage();
-    // form?.reset();
+    clearImage();
+    form?.reset();
   } catch (e: unknown) {
     const err = e as { message?: string };
     showAlert(err?.message || "Erro ao salvar cadastro.", "danger");
