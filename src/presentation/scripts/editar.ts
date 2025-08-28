@@ -14,6 +14,8 @@ type Registro = { [k: string]: any } & {
   Foto?: string;
 };
 
+const TAB = "Cadastro";
+
 const DB_NAME = "pwa-rpg-cache";
 const DB_VERSION = 1;
 const STORE_VERSIONS = "versions";
@@ -24,7 +26,7 @@ const COLS = {
   nome: "Nome",
   email: "Email",
   obs: "Observações", // aceitaremos Observacoes também ao ler
-  fotoFileId: "Imagem", // coluna onde você guarda o ID/URL
+  fotoFileId: "Imagem", // coluna onde você guarda o ID/URL (ou "Foto" conforme seu schema)
 };
 
 function $(s: string) { return document.querySelector(s) as HTMLElement | null; }
@@ -43,7 +45,6 @@ function getParam(name: string): string | null {
   const u = new URL(window.location.href);
   return u.searchParams.get(name);
 }
-
 function trim(s: any) { return (s ?? "").toString().trim(); }
 function same(a?: string | null, b?: string | null) { return (a ?? "") === (b ?? ""); }
 
@@ -56,6 +57,49 @@ function driveKeyFromAny(v: string | null | undefined): string | null {
   const id = DriveClient.extractDriveId(raw);
   if (isLikelyDriveId(id)) return `drive:${id!}`;
   return raw.includes("://") ? raw : null;
+}
+
+/** ==================== Auto-expand Observações ==================== */
+type AutoExpandCtl = { resize: () => void };
+function initAutoExpand(selector: string, maxHeightPx = 320): AutoExpandCtl | null {
+  const ta = document.querySelector<HTMLTextAreaElement>(selector);
+  if (!ta) return null;
+
+  const apply = () => {
+    ta.style.height = "auto";
+    const natural = ta.scrollHeight;
+    if (natural > maxHeightPx) {
+      ta.style.height = `${maxHeightPx}px`;
+      ta.style.overflowY = "auto";
+    } else {
+      ta.style.height = `${natural}px`;
+      ta.style.overflowY = "hidden";
+    }
+  };
+
+  ta.addEventListener("input", apply);
+  window.addEventListener("resize", apply);
+  requestAnimationFrame(apply);
+  setTimeout(apply, 60);
+
+  return { resize: apply };
+}
+let obsAuto: AutoExpandCtl | null = null;
+
+/** ==================== Auth guard (GIS pronto?) ==================== */
+async function authReady(): Promise<boolean> {
+  try {
+    const g = (window as any).google;
+    if (!g || !g.accounts) {
+      console.info("[auth] GIS ainda não carregou; mantendo local-first.");
+      return false;
+    }
+    await GoogleAuthManager.authenticate();
+    return true;
+  } catch (e) {
+    console.info("[auth] não foi possível autenticar agora; seguindo com cache.", e);
+    return false;
+  }
 }
 
 /** ==================== IndexedDB helpers ==================== */
@@ -171,7 +215,7 @@ const form = qi<HTMLFormElement>("#form");
 let removerFoto = false;
 let novoArquivo: File | null = null;
 
-/** ==================== Render helpers ==================== */
+/** ==================== Preview helpers ==================== */
 function setPreviewHidden(hide: boolean) {
   if (!fotoPreview || !fotoPlaceholder || !fotoDeleteBtn || !fotoActions) return;
   fotoPreview.classList.toggle("d-none", hide);
@@ -194,21 +238,22 @@ async function showImageFromAnyValue(v: string | null | undefined) {
     return;
   }
   try {
-    if (key.startsWith("drive:")) {
+    if (key.startsWith("drive:") && await authReady()) {
       const blob = await fetchDriveImageBlob(key.slice(6));
       await putImageBlob(key, blob);
       fotoPreview.src = URL.createObjectURL(blob);
       setPreviewHidden(false);
       return;
     }
-    // HTTP/HTTPS
-    const res = await fetch(key);
-    if (res.ok) {
-      const blob = await res.blob();
-      await putImageBlob(key, blob);
-      fotoPreview.src = URL.createObjectURL(blob);
-      setPreviewHidden(false);
-      return;
+    if (!key.startsWith("drive:")) {
+      const res = await fetch(key);
+      if (res.ok) {
+        const blob = await res.blob();
+        await putImageBlob(key, blob);
+        fotoPreview.src = URL.createObjectURL(blob);
+        setPreviewHidden(false);
+        return;
+      }
     }
   } catch {}
   // fallback: tenta URL estável (caso só tenhamos id)
@@ -226,7 +271,7 @@ const sheets = new SheetsClient();
 const drive = new DriveClient();
 
 async function loadLocalFirstThenValidate() {
-  const tab = getParam("tab") || "Cadastro";
+  const tab = getParam("tab") || TAB;
   const rowIndex = Number(getParam("rowIndex") || NaN);
   if (tabInput) tabInput.value = tab;
   if (rowIndexInput) rowIndexInput.value = String(rowIndex);
@@ -247,27 +292,30 @@ async function loadLocalFirstThenValidate() {
 
   // 2) Validar versão (fast-path em Metadados!B{linha})
   let metaLocal: MetaLocalMap = sheets.getMetaLocal();
-  let entry: MetaLocalEntry | undefined = metaLocal["Cadastro"];
+  let entry: MetaLocalEntry | undefined = metaLocal[TAB];
   if (!entry) {
     console.log("[meta] não há entrada local; construindo meta local…");
     metaLocal = await sheets.buildMetaLocalFromSheet();
-    entry = metaLocal["Cadastro"];
+    entry = metaLocal[TAB];
   }
 
-  const localVer = await getLocalVersion("Cadastro");
+  const localVer = await getLocalVersion(TAB);
   let remoteVer: string | null = null;
   let needNetwork = false;
 
   if (entry && Number.isInteger(entry.index) && entry.index >= 1) {
-    try {
-      remoteVer = await sheets.getMetaLastModByIndexFast(entry.index);
-      console.log("[meta] remoto (fast) =", remoteVer, "(linha", entry.index, ")");
-      needNetwork = (remoteVer == null) || (remoteVer !== localVer);
-    } catch (e) {
-      console.warn("[meta] fast-path falhou; usando valor local do meta:", e);
+    if (await authReady()) {
+      try {
+        remoteVer = await sheets.getMetaLastModByIndexFast(entry.index);
+        console.log("[meta] remoto (fast) =", remoteVer, "(linha", entry.index, ")");
+      } catch (e) {
+        console.warn("[meta] fast-path falhou; usando meta local:", e);
+        remoteVer = entry.lastMod || null;
+      }
+    } else {
       remoteVer = entry.lastMod || null;
-      needNetwork = (remoteVer == null) || (remoteVer !== localVer);
     }
+    needNetwork = (remoteVer == null) || (remoteVer !== localVer);
   } else {
     needNetwork = true;
   }
@@ -275,10 +323,9 @@ async function loadLocalFirstThenValidate() {
   console.log("[editar] needNetwork:", needNetwork, "localVer:", localVer, "remoteVer:", remoteVer);
 
   // 3) Se divergente (ou sem cache), busca do Sheets só a linha
-  if (needNetwork || !localRow) {
+  if ((needNetwork || !localRow) && await authReady()) {
     try {
-      await GoogleAuthManager.authenticate();
-      const r = await sheets.getObjectByIndex<Record<string, string>>("Cadastro", rowIndex);
+      const r = await sheets.getObjectByIndex<Record<string, string>>(TAB, rowIndex);
       if (!r) {
         setAlert("warning", "Registro não encontrado no Sheets.");
         return;
@@ -291,10 +338,10 @@ async function loadLocalFirstThenValidate() {
       const key = driveKeyFromAny(obj[COLS.fotoFileId] ?? obj["Foto"]);
       if (key && !(await getImageBlob(key))) {
         try {
-          if (key.startsWith("drive:")) {
+          if (key.startsWith("drive:") && await authReady()) {
             const blob = await fetchDriveImageBlob(key.slice(6));
             await putImageBlob(key, blob);
-          } else {
+          } else if (!key.startsWith("drive:")) {
             const res = await fetch(key);
             if (res.ok) await putImageBlob(key, await res.blob());
           }
@@ -303,12 +350,11 @@ async function loadLocalFirstThenValidate() {
 
       populateForm(obj);
       if (remoteVer) {
-        await setLocalVersion("Cadastro", remoteVer);
-        console.log("[meta] version local atualizada para:", remoteVer);
+        await setLocalVersion(TAB, remoteVer);
+        console.log("[meta] versão local atualizada para:", remoteVer);
       } else {
-        // se não conseguimos o remoto, garanta consistência criando/atualizando o metadado
-        const up = await sheets.upsertMeta("Cadastro");
-        await setLocalVersion("Cadastro", up.lastMod);
+        const up = await sheets.upsertMeta(TAB);
+        await setLocalVersion(TAB, up.lastMod);
       }
     } catch (e: any) {
       console.error(e);
@@ -318,25 +364,37 @@ async function loadLocalFirstThenValidate() {
 }
 
 function populateForm(reg: Registro) {
-  if (nomeInput) nomeInput.value = trim(reg[COLS.nome] ?? reg["nome"]);
+  if (nomeInput)  nomeInput.value  = trim(reg[COLS.nome] ?? reg["nome"]);
   if (emailInput) emailInput.value = trim(reg[COLS.email] ?? reg["email"]);
-  if (obsInput) obsInput.value = trim(reg[COLS.obs] ?? reg["Observacoes"] ?? reg["observacoes"]);
+  if (obsInput) {
+    obsInput.value =
+      trim(reg[COLS.obs] ?? reg["Observacoes"] ?? reg["observações"] ?? reg["observacoes"]);
+    // ajusta a altura ao novo conteúdo:
+    obsAuto?.resize();
+  }
+
   const cur = trim(reg[COLS.fotoFileId] ?? reg["Foto"]);
   if (fotoFileIdAtualHidden) fotoFileIdAtualHidden.value = cur;
   showImageFromAnyValue(cur);
 }
 
 /** ==================== Eventos de imagem ==================== */
-imgDrop?.addEventListener("click", () => fotoInput?.click());
+const imgDropArea = imgDrop;
+imgDropArea?.addEventListener("click", () => fotoInput?.click());
 fotoRetakeBtn?.addEventListener("click", () => fotoInput?.click());
 
-fotoDeleteBtn?.addEventListener("click", () => {
+fotoDeleteBtn?.addEventListener("click", (ev) => {
+  // **novo**: evita que o clique no X acione o clique da área #imgDrop
+  ev.preventDefault();
+  ev.stopPropagation();
+
   removerFoto = true;
   novoArquivo = null;
   if (fotoInput) fotoInput.value = "";
-  setPreviewHidden(true);
+  setPreviewHidden(true); // só some com a imagem
   setAlert("warning", "A foto será removida ao salvar.");
 });
+
 
 fotoInput?.addEventListener("change", () => {
   removerFoto = false;
@@ -350,7 +408,6 @@ fotoInput?.addEventListener("change", () => {
     };
     reader.readAsDataURL(f);
   } else {
-    // restaurar preview da atual se existir
     const cur = fotoFileIdAtualHidden?.value || "";
     showImageFromAnyValue(cur);
   }
@@ -360,7 +417,7 @@ fotoInput?.addEventListener("change", () => {
 form?.addEventListener("submit", async (ev) => {
   ev.preventDefault();
 
-  const tab = getParam("tab") || "Cadastro";
+  const tab = getParam("tab") || TAB;
   const rowIndex = Number(getParam("rowIndex") || NaN);
   if (!Number.isInteger(rowIndex) || rowIndex < 1) {
     setAlert("danger", "Parâmetros inválidos (rowIndex precisa ser >= 1).");
@@ -382,7 +439,10 @@ form?.addEventListener("submit", async (ev) => {
   };
 
   try {
-    await GoogleAuthManager.authenticate();
+    if (!(await authReady())) {
+      setAlert("warning", "Não foi possível autenticar agora. Tente novamente.");
+      return;
+    }
 
     // === IMAGEM ===
     // 1) remoção explícita
@@ -401,7 +461,6 @@ form?.addEventListener("submit", async (ev) => {
       const pastaImagens = await drive.ensurePath(["pwa-sheets-helloworld", "Cadastro", "Imagens"]);
       const uploaded = await drive.uploadImage(novoArquivo, pastaImagens);
       try { await drive.setPublic(uploaded.id); } catch {}
-
       atualizado[COLS.fotoFileId] = uploaded.id;
     }
 
@@ -409,8 +468,8 @@ form?.addEventListener("submit", async (ev) => {
     await sheets.updateRowByIndex(tab, rowIndex, atualizado);
 
     // === Atualiza Metadados e versão local ===
-    const meta = await sheets.upsertMeta("Cadastro");
-    await setLocalVersion("Cadastro", meta.lastMod);
+    const meta = await sheets.upsertMeta(TAB);
+    await setLocalVersion(TAB, meta.lastMod);
 
     // === Atualiza IndexedDB do registro ===
     const rowLocal: Registro = {
@@ -430,10 +489,10 @@ form?.addEventListener("submit", async (ev) => {
       if (oldKey) { try { await deleteImageBlob(oldKey); } catch {} }
       if (newKey) {
         try {
-          if (newKey.startsWith("drive:")) {
+          if (newKey.startsWith("drive:") && await authReady()) {
             const b = await fetchDriveImageBlob(newKey.slice(6));
             await putImageBlob(newKey, b);
-          } else {
+          } else if (!newKey.startsWith("drive:")) {
             const r = await fetch(newKey);
             if (r.ok) await putImageBlob(newKey, await r.blob());
           }
@@ -452,5 +511,8 @@ form?.addEventListener("submit", async (ev) => {
 /** ==================== Boot ==================== */
 document.addEventListener("DOMContentLoaded", async () => {
   try { await GoogleAuthManager.authenticate(); } catch {}
+  // inicia o auto-expand do textarea #observacoes
+  obsAuto = initAutoExpand("#observacoes", 320);
+
   await loadLocalFirstThenValidate();
 });
