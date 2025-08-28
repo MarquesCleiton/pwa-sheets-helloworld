@@ -6,20 +6,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
 
     <!-- Bootstrap -->
-    <link
-      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-      rel="stylesheet"
-      crossorigin="anonymous"
-    />
-    <!-- Ícones (opcional para o botão salvar/voltar) -->
-    <link
-      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css"
-      rel="stylesheet"
-    />
-    <script type="module" crossorigin src="/pwa-sheets-helloworld/assets/editar-DLxo7LQ5.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous" />
+    <!-- Ícones -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
+
+    <!-- GIS (mantém o padrão de auth utilizado no projeto) -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script type="module" crossorigin src="/pwa-sheets-helloworld/assets/editar-4wHe-hni.js"></script>
     <link rel="modulepreload" crossorigin href="/pwa-sheets-helloworld/assets/GoogleAuthManager-YBajxLns.js">
     <link rel="modulepreload" crossorigin href="/pwa-sheets-helloworld/assets/SheetsClient-BqbA6fvN.js">
+    <link rel="modulepreload" crossorigin href="/pwa-sheets-helloworld/assets/DriveClient-Dwxo1zcO.js">
   <link rel="manifest" href="/pwa-sheets-helloworld/manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="/pwa-sheets-helloworld/registerSW.js"></script></head>
+
   <body class="bg-light">
     <main class="container py-3 pb-5">
       <div class="d-flex justify-content-between align-items-center mb-3">
@@ -50,6 +48,49 @@
       </div>
 
       <form id="form" class="needs-validation" novalidate>
+        <!-- BLOCO DE IMAGEM (reaproveita o padrão do cadastro) -->
+        <div class="mb-3">
+          <label class="form-label">Imagem</label>
+
+          <!-- Área principal (drop/preview) -->
+          <div id="imgDrop"
+               class="border rounded-3 bg-body-secondary d-flex justify-content-center align-items-center position-relative"
+               style="min-height: 140px; cursor:pointer;">
+            <!-- Placeholder (ícone câmera) -->
+            <div id="imgPlaceholder" class="text-center text-success-emphasis">
+              <i class="bi bi-camera-fill fs-2 d-block"></i>
+            </div>
+
+            <!-- Pré-visualização -->
+            <img id="imgPreview"
+                 alt="Pré-visualização"
+                 class="d-none rounded-2"
+                 style="max-width: 100%; max-height: 60vh; object-fit: contain;">
+
+            <!-- Botão excluir (X) -->
+            <button type="button" id="imgDelete"
+                    class="btn btn-sm btn-dark-subtle border position-absolute top-0 end-0 translate-middle rounded-circle d-none"
+                    aria-label="Excluir imagem"
+                    style="width: 34px; height: 34px;">
+              <i class="bi bi-x-lg"></i>
+            </button>
+          </div>
+
+          <!-- Barra de ações (Retake) -->
+          <div id="imgActions" class="text-center mt-2 d-none">
+            <button type="button" id="imgRetake" class="btn btn-link text-success text-decoration-none">
+              <i class="bi bi-camera-fill me-1"></i>Retake
+            </button>
+          </div>
+
+          <!-- input real (oculto) -->
+          <input id="imagem" type="file" accept="image/*" class="d-none" />
+
+          <!-- guardará o fileId atual (preenchido pelo editar.ts quando carregar a linha) -->
+          <input id="fotoFileIdAtual" type="hidden" />
+        </div>
+        <!-- /IMAGEM -->
+
         <div class="mb-3">
           <label class="form-label">Nome</label>
           <input id="nome" class="form-control" type="text" placeholder="Nome" />
@@ -63,13 +104,7 @@
 
         <div class="mb-3">
           <label class="form-label">Observações</label>
-          <textarea
-            id="observacoes"
-            class="form-control"
-            rows="1"
-            placeholder="Observações"
-            style="resize:none; overflow:hidden;"
-          ></textarea>
+          <textarea id="observacoes" class="form-control" rows="1" placeholder="Observações" style="resize:none; overflow:hidden;"></textarea>
         </div>
 
         <div class="d-flex gap-2">
@@ -81,11 +116,9 @@
       </form>
     </main>
 
-    <script
-      src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-      crossorigin="anonymous"
-    ></script>
+    <div id="navbar-root"></div>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
     <!-- Caminho relativo para o Vite resolver no build -->
   </body>
 </html>
