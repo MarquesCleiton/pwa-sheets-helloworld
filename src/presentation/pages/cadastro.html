@@ -1,49 +1,98 @@
 <!doctype html>
 <html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Cadastro</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- Bootstrap -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" crossorigin="anonymous">
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
 
-  <title>Cadastro de Usuário</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
-</head>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+  </head>
 
-<body class="bg-light">
-  <div class="container py-4">
-    <h1 class="mb-3">Cadastro</h1>
-
-    <div id="authAlert" class="alert d-none" role="alert"></div>
-
-    <form id="cadastroForm" class="card p-3 shadow-sm">
-      <div class="row g-3">
-        <div class="col-md-6">
-          <label class="form-label">Nome</label>
-          <input id="nome" class="form-control" required />
-        </div>
-        <div class="col-md-6">
-          <label class="form-label">E-mail</label>
-          <input id="email" type="email" class="form-control" required />
-        </div>
-        <div class="col-12">
-          <label class="form-label">Observações</label>
-          <textarea id="obs" class="form-control" rows="3"></textarea>
-        </div>
+  <body class="bg-light">
+    <main class="container py-4 pb-5">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1 class="h5 mb-0">Cadastro</h1>
+        <button id="btnSair" class="btn btn-outline-secondary btn-sm">
+          <i class="bi bi-box-arrow-left me-1"></i>Sair
+        </button>
       </div>
 
-      <div class="d-flex gap-2 mt-3">
-        <button class="btn btn-primary" type="submit" id="btnSalvar">Salvar</button>
-        <button class="btn btn-outline-secondary" type="button" id="btnSair">Sair</button>
-      </div>
-    </form>
+      <div id="authAlert" class="alert d-none" role="alert"></div>
 
-    <div id="status" class="mt-3"></div>
-  </div>
+      <form id="cadastroForm" class="card p-3 shadow-sm">
+        <div class="row g-3">
 
-  <!-- script TS/JS gerado pelo Vite -->
-  <script type="module" src="/src/presentation/scripts/cadastro.ts"></script>
-</body>
+          <!-- BLOCO APP-SHEET-LIKE: IMAGEM -->
+          <div class="col-12">
+            <label class="form-label">Imagem</label>
 
+            <!-- Área principal (drop/preview) -->
+            <div id="imgDrop"
+                 class="border rounded-3 bg-body-secondary d-flex justify-content-center align-items-center position-relative"
+                 style="min-height: 140px; cursor:pointer;">
+              <!-- Placeholder (ícone câmera) -->
+              <div id="imgPlaceholder" class="text-center text-success-emphasis">
+                <i class="bi bi-camera-fill fs-2 d-block"></i>
+              </div>
+
+              <!-- Pré-visualização -->
+              <img id="imgPreview"
+                   alt="Pré-visualização"
+                   class="d-none rounded-2"
+                   style="max-width: 100%; max-height: 60vh; object-fit: contain;">
+              <!-- Botão excluir (X) -->
+              <button type="button" id="imgDelete"
+                      class="btn btn-sm btn-dark-subtle border position-absolute top-0 end-0 translate-middle rounded-circle d-none"
+                      aria-label="Excluir imagem"
+                      style="width: 34px; height: 34px;">
+                <i class="bi bi-x-lg"></i>
+              </button>
+            </div>
+
+            <!-- Barra de ações (Retake) -->
+            <div id="imgActions" class="text-center mt-2 d-none">
+              <button type="button" id="imgRetake" class="btn btn-link text-success text-decoration-none">
+                <i class="bi bi-camera-fill me-1"></i>Retake
+              </button>
+            </div>
+
+            <!-- input real (oculto) -->
+            <input id="imagem" type="file" accept="image/*" class="d-none" />
+          </div>
+          <!-- /IMAGEM -->
+
+          <div class="col-md-6">
+            <label for="nome" class="form-label">Nome<span class="text-danger">*</span></label>
+            <input id="nome" class="form-control" required />
+          </div>
+
+          <div class="col-md-6">
+            <label for="email" class="form-label">E-mail<span class="text-danger">*</span></label>
+            <input id="email" type="email" class="form-control" required />
+          </div>
+
+          <div class="col-12">
+            <label for="obs" class="form-label">Observações</label>
+            <textarea id="obs" class="form-control" rows="3"></textarea>
+          </div>
+        </div>
+
+        <div class="d-flex gap-2 mt-3">
+          <button id="btnSalvar" class="btn btn-primary" type="submit">
+            <i class="bi bi-check2-circle me-1"></i>Salvar
+          </button>
+        </div>
+      </form>
+
+      <div id="status" class="mt-3 small text-muted"></div>
+    </main>
+
+    <div id="navbar-root"></div>
+    <script type="module" src="/src/presentation/scripts/cadastro.ts"></script>
+  </body>
 </html>
