@@ -2,18 +2,16 @@
 import { GoogleAuthManager } from "../auth/GoogleAuthManager";
 
 type DriveFileLite = { id: string };
-type DriveFile = {
-  id: string;
-  name?: string;
-  mimeType?: string;
-  webViewLink?: string;
-  webContentLink?: string;
-  thumbnailLink?: string;
-};
+type DriveFolder = { id: string; name: string };
 
 export class DriveClient {
   private readonly fields: string;
   private readonly appRootName: string;
+
+  // ====== Cache (localStorage) ======
+  private static readonly ROOT_CACHE_KEY = "drive:appRootId";
+  private static readonly PATH_PREFIX    = "drive:path:";
+  private static readonly CACHE_TTL_MS   = 24 * 60 * 60 * 1000; // 1 dia
 
   constructor(
     fields: string = "id,name,mimeType,webViewLink,webContentLink,thumbnailLink",
@@ -23,8 +21,7 @@ export class DriveClient {
     this.appRootName = appRootName;
   }
 
-  // ========== Auth/HTTP ==========
-
+  // ====== Auth/HTTP ======
   private async getAccessToken(): Promise<string> {
     await GoogleAuthManager.authenticate();
     const token = GoogleAuthManager.getAccessToken();
@@ -32,9 +29,9 @@ export class DriveClient {
     return token;
   }
 
-  /** Não force Content-Type quando body for FormData (boundary é do navegador). */
+  /** Não force Content-Type quando body for FormData (browser define o boundary). */
   private async request<T = any>(url: string, init?: RequestInit): Promise<T> {
-    const token = await this.getAccessToken();
+    const token  = await this.getAccessToken();
     const isForm = init?.body instanceof FormData;
 
     const res = await fetch(url, {
@@ -59,12 +56,7 @@ export class DriveClient {
     return (await res.text()) as unknown as T;
   }
 
-  // ========== Cache simples (localStorage) ==========
-
-  private static readonly ROOT_CACHE_KEY = "drive:appRootId";
-  private static readonly PATH_PREFIX = "drive:path:";
-  private static readonly CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 dia
-
+  // ====== Cache helpers ======
   private getCache(key: string): string | null {
     try {
       const raw = localStorage.getItem(key);
@@ -78,9 +70,8 @@ export class DriveClient {
     try { localStorage.setItem(key, JSON.stringify({ id, ts: Date.now() })); } catch {}
   }
 
-  // ========== Pastas ==========
-
-  private async findFolderInParent(parentId: string, name: string) {
+  // ====== Pastas ======
+  private async findFolderInParent(parentId: string, name: string): Promise<DriveFolder | null> {
     const q = [
       `name='${name.replace(/'/g, "\\'")}'`,
       `mimeType='application/vnd.google-apps.folder'`,
@@ -88,17 +79,18 @@ export class DriveClient {
       `'${parentId}' in parents`,
     ].join(" and ");
     const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1`;
-    const r = await this.request<{ files?: { id: string; name: string }[] }>(url);
+    const r = await this.request<{ files?: DriveFolder[] }>(url);
     return (r.files || [])[0] ?? null;
   }
 
-  private async createFolder(parentId: string, name: string) {
+  private async createFolder(parentId: string, name: string): Promise<DriveFolder> {
     const url = `https://www.googleapis.com/drive/v3/files?fields=id,name`;
-    return await this.request<{ id: string; name: string }>(url, {
+    return await this.request<DriveFolder>(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name, parents: [parentId],
+        name,
+        parents: [parentId],
         mimeType: "application/vnd.google-apps.folder",
       }),
     });
@@ -116,24 +108,14 @@ export class DriveClient {
       `'root' in parents`,
     ].join(" and ");
     const listUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1`;
-    const found = await this.request<{ files?: { id: string; name: string }[] }>(listUrl);
+    const found = await this.request<{ files?: DriveFolder[] }>(listUrl);
     const hit = (found.files || [])[0];
     if (hit) {
       this.setCache(DriveClient.ROOT_CACHE_KEY, hit.id);
       return hit.id;
     }
 
-    const createUrl = `https://www.googleapis.com/drive/v3/files?fields=id,name`;
-    const created = await this.request<{ id: string; name: string }>(createUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: this.appRootName,
-        mimeType: "application/vnd.google-apps.folder",
-        parents: ["root"],
-      }),
-    });
-
+    const created = await this.createFolder("root", this.appRootName);
     this.setCache(DriveClient.ROOT_CACHE_KEY, created.id);
     return created.id;
   }
@@ -165,8 +147,7 @@ export class DriveClient {
     return parent;
   }
 
-  // ========== Uploads ==========
-
+  // ====== Uploads ======
   private async findRecentByName(parentId: string, name: string, sinceMs: number) {
     const iso = new Date(sinceMs).toISOString();
     const q = `name='${name.replace(/'/g, "\\'")}' and '${parentId}' in parents and trashed=false and createdTime>'${iso}'`;
@@ -175,11 +156,14 @@ export class DriveClient {
     return (r.files || [])[0] ?? null;
   }
 
-  /** Caminho rápido: multipart (1 chamada). Se 500, tenta recuperar por nome; se não achar, cai para resumable. */
+  /**
+   * Fast-path: multipart (1 chamada, retorna {id}).
+   * Se 500, tenta recuperar por nome recém-criado; se não achar, usa resumable.
+   */
   async uploadImage(file: File, parentFolderId: string): Promise<DriveFileLite> {
     const startedAt = Date.now();
 
-    // multipart fast-path
+    // multipart
     const meta = { name: file.name, mimeType: file.type || "application/octet-stream", parents: [parentFolderId] };
     const form = new FormData();
     form.append("metadata", new Blob([JSON.stringify(meta)], { type: "application/json; charset=UTF-8" }));
@@ -189,16 +173,16 @@ export class DriveClient {
     try {
       return await this.request<DriveFileLite>(url, { method: "POST", body: form });
     } catch {
-      // 500? o arquivo pode ter sido criado; tenta recuperar
+      // erro (ex.: 500) — o arquivo pode ter sido criado; tenta recuperar
       const found = await this.findRecentByName(parentFolderId, file.name, startedAt - 60_000);
       if (found) return found;
 
-      // fallback super estável
+      // fallback: resumable (robusto)
       return await this.uploadImageResumable(file, parentFolderId);
     }
   }
 
-  /** Resumable upload — robusto para arquivos maiores ou redes instáveis. */
+  /** Resumable upload — estável para arquivos maiores ou rede instável (retorna {id}). */
   async uploadImageResumable(file: File, parentFolderId: string): Promise<DriveFileLite> {
     const token = await this.getAccessToken();
 
@@ -230,9 +214,8 @@ export class DriveClient {
     return await putRes.json();
   }
 
-  // ========== Permissões/URLs ==========
-
-  /** Torna o arquivo público para leitura (anyone → reader). */
+  // ====== Permissões/URLs ======
+  /** Torna o arquivo público (anyone → reader). */
   async setPublic(fileId: string): Promise<void> {
     const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`;
     await this.request(url, {
@@ -242,8 +225,30 @@ export class DriveClient {
     });
   }
 
-  /** URL direta para usar em <img>. Requer setPublic antes. */
-  static viewUrl(fileId: string): string {
-    return `https://drive.google.com/uc?export=view&id=${encodeURIComponent(fileId)}`;
+  /**
+   * URL estável para `<img>` vinda do host de mídia do Google.
+   * Passe `sizePx` para miniaturas (ex.: 48 → `=s48`).
+   */
+  static viewUrl(fileId: string, sizePx?: number): string {
+    return sizePx
+      ? `https://lh3.googleusercontent.com/d/${encodeURIComponent(fileId)}=s${sizePx}`
+      : `https://lh3.googleusercontent.com/d/${encodeURIComponent(fileId)}`;
+  }
+
+  /**
+   * Se você receber uma URL completa do Drive (uc, file/d, usercontent),
+   * use isto para extrair o ID e reconstruir com `viewUrl`.
+   */
+  static extractDriveId(value: string): string | null {
+    const s = (value || "").trim();
+    if (!s) return null;
+    if (!s.includes("://")) return s; // já é um ID
+    const m1 = s.match(/[?&]id=([a-zA-Z0-9_-]+)/);             // uc?export=view&id=...
+    if (m1) return m1[1];
+    const m2 = s.match(/\/d\/([a-zA-Z0-9_-]+)/);               // /file/d/<id>/
+    if (m2) return m2[1];
+    const m3 = s.match(/\/download\?id=([a-zA-Z0-9_-]+)/);     // drive.usercontent.google.com/download?id=...
+    if (m3) return m3[1];
+    return null;
   }
 }
