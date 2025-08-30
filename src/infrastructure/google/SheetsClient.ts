@@ -48,12 +48,10 @@ export class SheetsClient {
 
     if (!res.ok) {
       let errorPayload: any = {};
-      try { errorPayload = await res.json(); } catch {}
+      try { errorPayload = await res.json(); } catch { }
       console.error("Erro na requisição ao Google Sheets:", errorPayload);
       throw new Error(errorPayload?.error?.message || `Erro ao acessar o Google Sheets (HTTP ${res.status}).`);
     }
-
-    console.log("SheetsClient 56")
 
     const contentType = res.headers.get("content-type") || "";
     if (!contentType.includes("application/json")) {
@@ -64,7 +62,6 @@ export class SheetsClient {
         return undefined as unknown as T;
       }
     }
-    console.log("SheetsClient 67")
     return (await res.json()) as T;
   }
 
@@ -315,24 +312,21 @@ export class SheetsClient {
    * - Se não existir → cria linha no final (A=sheetName, B=ISO now) e retorna index da nova linha.
    * Em ambos os casos, atualiza o cache local.
    */
-  async upsertMeta(sheetName: string, iso?: string): Promise<MetaLocalEntry> {
-    const nowIso = iso ?? new Date().toISOString(); // padrão ISO: 2025-08-28T16:34:20.123Z
-    let meta = this.getMetaLocal();
-    let entry = meta[sheetName];
+  // ====== 1) Atualiza SOMENTE no Sheets (não mexe no cache local) ======
+  async upsertMetaSheet(sheetName: string, iso?: string): Promise<MetaLocalEntry> {
+    const nowIso = iso ?? new Date().toISOString();
 
-    if (entry && Number.isInteger(entry.index) && entry.index >= 1) {
-      // atualiza somente a célula B{linha}
-      const rowNumberA1 = entry.index + 1;
+    // 1) tenta usar o índice já conhecido (se existir no cache), mas sem atualizar o cache!
+    const local = this.getMetaLocal()[sheetName];
+    if (local && Number.isInteger(local.index) && local.index >= 1) {
+      const rowNumberA1 = local.index + 1;
       const range = `${SheetsClient.META_TAB}!B${rowNumberA1}:B${rowNumberA1}`;
       const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
       await this.request(url, "PUT", { range, majorDimension: "ROWS", values: [[nowIso]] });
-
-      entry = { index: entry.index, lastMod: nowIso };
-      this.upsertMetaLocalEntry(sheetName, entry);
-      return entry;
+      return { index: local.index, lastMod: nowIso };
     }
 
-    // precisamos descobrir se já existe alguma linha com este SheetName
+    // 2) não sabemos o índice → localizar na aba Metadados (sem gravar local)
     const rows = await this.getObjectsWithIndex<Record<string, string>>(SheetsClient.META_TAB);
     let found: { rowIndex: number; rowNumberA1: number } | null = null;
     for (const r of rows) {
@@ -344,21 +338,40 @@ export class SheetsClient {
       const range = `${SheetsClient.META_TAB}!B${found.rowNumberA1}:B${found.rowNumberA1}`;
       const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
       await this.request(url, "PUT", { range, majorDimension: "ROWS", values: [[nowIso]] });
-
-      const e: MetaLocalEntry = { index: found.rowIndex, lastMod: nowIso };
-      this.upsertMetaLocalEntry(sheetName, e);
-      return e;
+      return { index: found.rowIndex, lastMod: nowIso };
     }
 
-    // não existe → append no final (A=SheetName, B=ISO)
+    // 3) não existe → criar linha nova (A=SheetName, B=ISO)
     const range = `${SheetsClient.META_TAB}!A1`;
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`;
     await this.request(url, "POST", { values: [[sheetName, nowIso]] });
 
-    // após append, recarrega metadados (ou poderíamos inferir o index pelo tamanho)
-    meta = await this.buildMetaLocalFromSheet();
-    const created = meta[sheetName];
-    if (!created) throw new Error("Falha ao criar entrada em Metadados.");
-    return created;
+    // não atualiza o cache local aqui!
+    // retorna um palpite (index desconhecido até reconstruir)
+    return { index: -1, lastMod: nowIso };
   }
+
+  // ====== 2) Sincroniza o cache LOCAL com o que está no Sheets ======
+  async upsertMetaLocal(sheetName: string): Promise<MetaLocalEntry | null> {
+    // se já temos o índice local, usa fast read para comparar
+    const map = this.getMetaLocal();
+    const entry = map[sheetName];
+
+    if (entry && Number.isInteger(entry.index) && entry.index >= 1) {
+      const remoteIso = await this.getMetaLastModByIndexFast(entry.index);
+      if (remoteIso && remoteIso !== entry.lastMod) {
+        const updated: MetaLocalEntry = { index: entry.index, lastMod: remoteIso };
+        // atualiza APENAS o cache local
+        const next = { ...map, [sheetName]: updated };
+        this.setMetaLocal(next);
+        return updated;
+      }
+      return entry ?? null;
+    }
+
+    // não temos índice local → reconstrói metadados a partir do Sheets
+    const rebuilt = await this.buildMetaLocalFromSheet();
+    return rebuilt[sheetName] ?? null;
+  }
+
 }

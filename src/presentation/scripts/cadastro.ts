@@ -149,7 +149,7 @@ form?.addEventListener("submit", async (ev) => {
 
     setStatus("Gravando cadastro…");
     await sheets.appendRowByHeader(TAB, data);
-    await sheets.upsertMeta(TAB);
+    await sheets.upsertMetaSheet(TAB);
 
     showAlert("Cadastro criado com sucesso!", "success");
     setStatus("Cadastro criado com sucesso!");

@@ -1,518 +1,541 @@
-// src/presentation/scripts/editar.ts
-import { GoogleAuthManager } from "../../infrastructure/auth/GoogleAuthManager";
-import { SheetsClient, MetaLocalEntry, MetaLocalMap } from "../../infrastructure/google/SheetsClient";
-import { DriveClient } from "../../infrastructure/google/DriveClient";
+// src/presentation/pages/editar.ts
+import { SheetsClient } from "../../infrastructure/google/SheetsClient";
+import { loadNavbar } from "../../shared/loadNavbar";
+import { navigateTo } from "../../utils/navigation";
 
-/** ==================== Const / Types ==================== */
-type Registro = { [k: string]: any } & {
+const SHARED_FOLDER_ID = "1zId11Ydti8d0FOQoQjd9lQmPo6GiJx26"; // Pasta fixa
+
+type LinhaCadastro = Record<string, any>;
+type Usuario = {
   rowIndex: number;
-  Nome?: string;
-  Email?: string;
-  Observações?: string;
-  Observacoes?: string;
-  Imagem?: string; // pode ser id, url, etc.
-  Foto?: string;
+  nome: string;
+  email: string;
+  observacoes: string;
+  fotoUrl?: string | null;
+  fotoId?: string | null;
 };
 
-const TAB = "Cadastro";
-
-const DB_NAME = "pwa-rpg-cache";
-const DB_VERSION = 1;
-const STORE_VERSIONS = "versions";
-const STORE_CADASTRO = "cadastro";
-const STORE_IMAGES = "images";
-
-const COLS = {
-  nome: "Nome",
-  email: "Email",
-  obs: "Observações", // aceitaremos Observacoes também ao ler
-  fotoFileId: "Imagem", // coluna onde você guarda o ID/URL (ou "Foto" conforme seu schema)
-};
-
-function $(s: string) { return document.querySelector(s) as HTMLElement | null; }
-function qi<T extends HTMLElement = HTMLElement>(s: string) { return document.querySelector(s) as T | null; }
-
-function setAlert(kind: "success" | "danger" | "warning", msg: string) {
-  const box = $("#alert") as HTMLDivElement | null;
-  if (!box) return;
-  box.className = `alert alert-${kind}`;
-  box.textContent = msg;
-  box.classList.remove("d-none");
-  setTimeout(() => box.classList.add("d-none"), 4500);
-}
-
-function getParam(name: string): string | null {
-  const u = new URL(window.location.href);
-  return u.searchParams.get(name);
-}
-function trim(s: any) { return (s ?? "").toString().trim(); }
-function same(a?: string | null, b?: string | null) { return (a ?? "") === (b ?? ""); }
-
-function isLikelyDriveId(id: string | null | undefined): boolean {
-  return !!id && /^[A-Za-z0-9_-]{10,}$/.test(id);
-}
-function driveKeyFromAny(v: string | null | undefined): string | null {
-  const raw = trim(v);
-  if (!raw) return null;
-  const id = DriveClient.extractDriveId(raw);
-  if (isLikelyDriveId(id)) return `drive:${id!}`;
-  return raw.includes("://") ? raw : null;
-}
-
-/** ==================== Auto-expand Observações ==================== */
-type AutoExpandCtl = { resize: () => void };
-function initAutoExpand(selector: string, maxHeightPx = 320): AutoExpandCtl | null {
-  const ta = document.querySelector<HTMLTextAreaElement>(selector);
-  if (!ta) return null;
-
-  const apply = () => {
-    ta.style.height = "auto";
-    const natural = ta.scrollHeight;
-    if (natural > maxHeightPx) {
-      ta.style.height = `${maxHeightPx}px`;
-      ta.style.overflowY = "auto";
-    } else {
-      ta.style.height = `${natural}px`;
-      ta.style.overflowY = "hidden";
-    }
-  };
-
-  ta.addEventListener("input", apply);
-  window.addEventListener("resize", apply);
-  requestAnimationFrame(apply);
-  setTimeout(apply, 60);
-
-  return { resize: apply };
-}
-let obsAuto: AutoExpandCtl | null = null;
-
-/** ==================== Auth guard (GIS pronto?) ==================== */
-async function authReady(): Promise<boolean> {
-  try {
-    const g = (window as any).google;
-    if (!g || !g.accounts) {
-      console.info("[auth] GIS ainda não carregou; mantendo local-first.");
-      return false;
-    }
-    await GoogleAuthManager.authenticate();
-    return true;
-  } catch (e) {
-    console.info("[auth] não foi possível autenticar agora; seguindo com cache.", e);
-    return false;
+declare global {
+  interface Window {
+    deleteDriveFile?: (fileIdOrUrl: string) => Promise<void>;
+    uploadDriveImage?: (file: File) => Promise<{ id?: string; url?: string }>;
   }
 }
 
-/** ==================== IndexedDB helpers ==================== */
-function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_VERSIONS)) db.createObjectStore(STORE_VERSIONS);
-      if (!db.objectStoreNames.contains(STORE_CADASTRO)) db.createObjectStore(STORE_CADASTRO, { keyPath: "rowIndex" });
-      if (!db.objectStoreNames.contains(STORE_IMAGES)) db.createObjectStore(STORE_IMAGES);
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+// ===== Utils Drive =====
+function extrairIdDoDrive(url: string): string | null {
+  if (!url) return null;
+  const regex1 = /\/d\/([a-zA-Z0-9_-]{10,})/;
+  const regex2 = /id=([a-zA-Z0-9_-]{10,})/;
+  const regex3 = /^([a-zA-Z0-9_-]{10,})$/;
+  let m = url.match(regex1); if (m) return m[1];
+  m = url.match(regex2); if (m) return m[1];
+  m = url.match(regex3); if (m) return m[1];
+  return null;
 }
 
-async function getLocalVersion(tab: string): Promise<string | null> {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE_VERSIONS, "readonly");
-    const st = tx.objectStore(STORE_VERSIONS);
-    const rq = st.get(tab);
-    rq.onsuccess = () => res((rq.result as string) ?? null);
-    rq.onerror = () => rej(rq.error);
-  });
-}
-async function setLocalVersion(tab: string, iso: string): Promise<void> {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE_VERSIONS, "readwrite");
-    tx.objectStore(STORE_VERSIONS).put(iso, tab);
-    tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error);
-  });
+// Excluir
+window.deleteDriveFile = async (fileIdOrUrl: string) => {
+  const { DriveClient } = await import("../../infrastructure/google/DriveClient");
+  const drive = new DriveClient();
+  const id = extrairIdDoDrive(fileIdOrUrl);
+  if (!id) return;
+  await drive.deleteFile(id);
+};
+
+// Upload
+window.uploadDriveImage = async (file: File) => {
+  const { DriveClient } = await import("../../infrastructure/google/DriveClient");
+  const drive = new DriveClient();
+  const uploaded = await drive.uploadImage(file, SHARED_FOLDER_ID);
+  await drive.setPublic(uploaded.id);
+  const url = DriveClient.viewUrl(uploaded.id);
+  return { id: uploaded.id, url };
+};
+
+// ============================ IndexedDB ============================
+const DB_NAME = "pwa-sheets-cache";
+const DB_VERSION = 2; // bump por causa do store de imagens
+const STORE_USERS  = "users";
+const STORE_IMAGES = "images"; // blobs de foto
+
+class CacheDB {
+  private db: IDBDatabase | null = null;
+
+  async open() {
+    if (this.db) return this.db;
+    this.db = await new Promise<IDBDatabase>((res, rej) => {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_USERS)) {
+          const os = db.createObjectStore(STORE_USERS, { keyPath: "key" });
+          os.createIndex("by_email", "email");
+        }
+        if (!db.objectStoreNames.contains(STORE_IMAGES)) {
+          db.createObjectStore(STORE_IMAGES, { keyPath: "key" }); // key = "id:{fotoId}" | "url:{hash(url)}"
+        }
+      };
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => rej(req.error);
+    });
+    return this.db;
+  }
+
+  async getAllUsers(): Promise<Usuario[]> {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(STORE_USERS, "readonly");
+      const st = tx.objectStore(STORE_USERS);
+      const req = st.getAll();
+      req.onsuccess = () => res((req.result || []).map((x: any) => x.data as Usuario));
+      req.onerror = () => rej(req.error);
+    });
+  }
+
+  async upsertUser(user: Usuario) {
+    const db = await this.open();
+    return new Promise<void>((res, rej) => {
+      const tx = db.transaction(STORE_USERS, "readwrite");
+      const st = tx.objectStore(STORE_USERS);
+      const key = (user.email || user.nome || "").toLowerCase() || `row_${hash(JSON.stringify(user))}`;
+      st.put({ key, email: user.email || null, data: user });
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  }
+
+  // ===== imagens
+  async getImage(key: string): Promise<Blob | null> {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(STORE_IMAGES, "readonly");
+      const st = tx.objectStore(STORE_IMAGES);
+      const req = st.get(key);
+      req.onsuccess = () => res((req.result && req.result.blob) || null);
+      req.onerror = () => rej(req.error);
+    });
+  }
+  async putImage(key: string, blob: Blob): Promise<void> {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(STORE_IMAGES, "readwrite");
+      const st = tx.objectStore(STORE_IMAGES);
+      st.put({ key, blob });
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  }
+  async delImage(key: string): Promise<void> {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(STORE_IMAGES, "readwrite");
+      const st = tx.objectStore(STORE_IMAGES);
+      st.delete(key);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  }
 }
 
-async function getRowFromIDB(rowIndex: number): Promise<Registro | null> {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE_CADASTRO, "readonly");
-    const rq = tx.objectStore(STORE_CADASTRO).get(rowIndex);
-    rq.onsuccess = () => res((rq.result as Registro) ?? null);
-    rq.onerror = () => rej(rq.error);
-  });
+function hash(s: string) { let h = 0, i = 0; while (i < s.length) h = ((h<<5)-h+s.charCodeAt(i++))|0; return Math.abs(h); }
+function imgKey(u: { fotoId?: string|null; fotoUrl?: string|null }): string | null {
+  if (u.fotoId) return `id:${u.fotoId}`;
+  if (u.fotoUrl) return `url:${hash(u.fotoUrl)}`;
+  return null;
 }
-async function putRowToIDB(row: Registro): Promise<void> {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE_CADASTRO, "readwrite");
-    tx.objectStore(STORE_CADASTRO).put(row);
-    tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error);
-  });
-}
-
-async function getImageBlob(key: string): Promise<Blob | null> {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE_IMAGES, "readonly");
-    const rq = tx.objectStore(STORE_IMAGES).get(key);
-    rq.onsuccess = () => res((rq.result as Blob) ?? null);
-    rq.onerror = () => rej(rq.error);
-  });
-}
-async function putImageBlob(key: string, blob: Blob): Promise<void> {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE_IMAGES, "readwrite");
-    tx.objectStore(STORE_IMAGES).put(blob, key);
-    tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error);
-  });
-}
-async function deleteImageBlob(key: string): Promise<void> {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE_IMAGES, "readwrite");
-    tx.objectStore(STORE_IMAGES).delete(key);
-    tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error);
-  });
-}
-
-async function fetchDriveImageBlob(fileId: string): Promise<Blob> {
-  await GoogleAuthManager.authenticate();
-  const token = GoogleAuthManager.getAccessToken();
-  const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) throw new Error(`Drive media ${res.status}`);
+async function fetchBlob(url: string): Promise<Blob> {
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Falha ao baixar imagem (${res.status})`);
   return await res.blob();
 }
 
-/** ==================== UI refs ==================== */
-const tabInput = qi<HTMLInputElement>("#tab");
-const rowIndexInput = qi<HTMLInputElement>("#rowIndex");
-const nomeInput = qi<HTMLInputElement>("#nome");
-const emailInput = qi<HTMLInputElement>("#email");
-const obsInput = qi<HTMLTextAreaElement>("#observacoes");
+// ============================ Normalização & helpers ============================
+const normalize = (rowIndex: number, obj: LinhaCadastro): Usuario => ({
+  rowIndex,
+  nome: obj?.Nome ?? obj?.nome ?? "",
+  email: obj?.Email ?? obj?.email ?? "",
+  observacoes:
+    obj?.Observacoes ?? obj?.Observações ??
+    obj?.observacoes ?? obj?.observações ?? "",
+  fotoUrl: obj?.FotoUrl ?? obj?.fotoUrl ?? obj?.ImageUrl ?? obj?.imageUrl ?? obj?.Imagem ?? obj?.Foto ?? null,
+  fotoId:  obj?.FotoId  ?? obj?.fotoId  ?? obj?.ImageId  ?? obj?.imageId  ?? null,
+});
 
-const fotoInput = qi<HTMLInputElement>("#imagem");
-const fotoPreview = qi<HTMLImageElement>("#imgPreview");
-const fotoPlaceholder = $("#imgPlaceholder");
-const fotoDeleteBtn = qi<HTMLButtonElement>("#imgDelete");
-const fotoRetakeBtn = qi<HTMLButtonElement>("#imgRetake");
-const fotoActions = $("#imgActions");
-const imgDrop = $("#imgDrop");
+const $ = <T extends HTMLElement = HTMLElement>(sel: string) =>
+  document.querySelector(sel) as T | null;
 
-const fotoFileIdAtualHidden = qi<HTMLInputElement>("#fotoFileIdAtual");
-const form = qi<HTMLFormElement>("#form");
-
-/** ==================== Estado de imagem ==================== */
-let removerFoto = false;
-let novoArquivo: File | null = null;
-
-/** ==================== Preview helpers ==================== */
-function setPreviewHidden(hide: boolean) {
-  if (!fotoPreview || !fotoPlaceholder || !fotoDeleteBtn || !fotoActions) return;
-  fotoPreview.classList.toggle("d-none", hide);
-  fotoPlaceholder.classList.toggle("d-none", !hide);
-  fotoDeleteBtn.classList.toggle("d-none", hide);
-  fotoActions.classList.toggle("d-none", hide);
+function escapeHtml(s: any) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#039;");
 }
+function deepClone<T>(x: T): T { return JSON.parse(JSON.stringify(x)); }
+function wait(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
 
-async function showImageFromAnyValue(v: string | null | undefined) {
-  if (!fotoPreview || !fotoPlaceholder || !fotoDeleteBtn || !fotoActions) return;
-  const key = driveKeyFromAny(v);
-  if (!key) {
-    setPreviewHidden(true);
-    return;
-  }
-  const cached = await getImageBlob(key);
-  if (cached) {
-    fotoPreview.src = URL.createObjectURL(cached);
-    setPreviewHidden(false);
-    return;
-  }
-  try {
-    if (key.startsWith("drive:") && await authReady()) {
-      const blob = await fetchDriveImageBlob(key.slice(6));
-      await putImageBlob(key, blob);
-      fotoPreview.src = URL.createObjectURL(blob);
-      setPreviewHidden(false);
-      return;
-    }
-    if (!key.startsWith("drive:")) {
-      const res = await fetch(key);
-      if (res.ok) {
-        const blob = await res.blob();
-        await putImageBlob(key, blob);
-        fotoPreview.src = URL.createObjectURL(blob);
-        setPreviewHidden(false);
-        return;
-      }
-    }
-  } catch {}
-  // fallback: tenta URL estável (caso só tenhamos id)
-  const id = DriveClient.extractDriveId(trim(v));
-  if (isLikelyDriveId(id)) {
-    fotoPreview.src = DriveClient.viewUrl(id!, 256);
-    setPreviewHidden(false);
-    return;
-  }
-  setPreviewHidden(true);
-}
-
-/** ==================== Carregar/Salvar ==================== */
+// ============================ Estado/UI refs ============================
+const db = new CacheDB();
 const sheets = new SheetsClient();
-const drive = new DriveClient();
 
-async function loadLocalFirstThenValidate() {
-  const tab = getParam("tab") || TAB;
-  const rowIndex = Number(getParam("rowIndex") || NaN);
-  if (tabInput) tabInput.value = tab;
-  if (rowIndexInput) rowIndexInput.value = String(rowIndex);
+let original: Usuario | null = null;
+let current: Usuario | null = null;
+let selectedFile: File | null = null;
+let photoRemoved = false;
 
-  if (!Number.isInteger(rowIndex) || rowIndex < 1) {
-    setAlert("danger", "Parâmetros inválidos (rowIndex precisa ser >= 1).");
-    return;
-  }
+const alertBox = $("#alert") as HTMLDivElement | null;
+const form = $("#form") as HTMLFormElement | null;
 
-  // 1) Local first
-  let localRow = await getRowFromIDB(rowIndex);
-  if (localRow) {
-    console.log("[editar] carregando do cache local");
-    populateForm(localRow);
-  } else {
-    console.log("[editar] não há cache local para a linha; exibindo vazio até validar…");
-  }
+const tabEl = $("#tab") as HTMLInputElement | null;
+const rowIndexEl = $("#rowIndex") as HTMLInputElement | null;
 
-  // 2) Validar versão (fast-path em Metadados!B{linha})
-  let metaLocal: MetaLocalMap = sheets.getMetaLocal();
-  let entry: MetaLocalEntry | undefined = metaLocal[TAB];
-  if (!entry) {
-    console.log("[meta] não há entrada local; construindo meta local…");
-    metaLocal = await sheets.buildMetaLocalFromSheet();
-    entry = metaLocal[TAB];
-  }
+const nomeEl = $("#nome") as HTMLInputElement | null;
+const emailEl = $("#email") as HTMLInputElement | null;
+const obsEl = $("#observacoes") as HTMLTextAreaElement | null;
 
-  const localVer = await getLocalVersion(TAB);
-  let remoteVer: string | null = null;
-  let needNetwork = false;
+const imgDrop = $("#imgDrop") as HTMLDivElement | null;
+const imgPlaceholder = $("#imgPlaceholder") as HTMLDivElement | null;
+const imgPreview = $("#imgPreview") as HTMLImageElement | null;
+const imgDelete = $("#imgDelete") as HTMLButtonElement | null;
+const imgActions = $("#imgActions") as HTMLDivElement | null;
+const inputFile = $("#imagem") as HTMLInputElement | null;
+const fotoFileIdAtual = $("#fotoFileIdAtual") as HTMLInputElement | null;
 
-  if (entry && Number.isInteger(entry.index) && entry.index >= 1) {
-    if (await authReady()) {
-      try {
-        remoteVer = await sheets.getMetaLastModByIndexFast(entry.index);
-        console.log("[meta] remoto (fast) =", remoteVer, "(linha", entry.index, ")");
-      } catch (e) {
-        console.warn("[meta] fast-path falhou; usando meta local:", e);
-        remoteVer = entry.lastMod || null;
-      }
-    } else {
-      remoteVer = entry.lastMod || null;
-    }
-    needNetwork = (remoteVer == null) || (remoteVer !== localVer);
-  } else {
-    needNetwork = true;
-  }
-
-  console.log("[editar] needNetwork:", needNetwork, "localVer:", localVer, "remoteVer:", remoteVer);
-
-  // 3) Se divergente (ou sem cache), busca do Sheets só a linha
-  if ((needNetwork || !localRow) && await authReady()) {
-    try {
-      const r = await sheets.getObjectByIndex<Record<string, string>>(TAB, rowIndex);
-      if (!r) {
-        setAlert("warning", "Registro não encontrado no Sheets.");
-        return;
-      }
-      const obj = { rowIndex: r.rowIndex, ...(r.object || {}) } as Registro;
-      console.log("[editar] linha atualizada do Sheets:", obj);
-      await putRowToIDB(obj);
-
-      // cache da imagem
-      const key = driveKeyFromAny(obj[COLS.fotoFileId] ?? obj["Foto"]);
-      if (key && !(await getImageBlob(key))) {
-        try {
-          if (key.startsWith("drive:") && await authReady()) {
-            const blob = await fetchDriveImageBlob(key.slice(6));
-            await putImageBlob(key, blob);
-          } else if (!key.startsWith("drive:")) {
-            const res = await fetch(key);
-            if (res.ok) await putImageBlob(key, await res.blob());
-          }
-        } catch {}
-      }
-
-      populateForm(obj);
-      if (remoteVer) {
-        await setLocalVersion(TAB, remoteVer);
-        console.log("[meta] versão local atualizada para:", remoteVer);
-      } else {
-        const up = await sheets.upsertMeta(TAB);
-        await setLocalVersion(TAB, up.lastMod);
-      }
-    } catch (e: any) {
-      console.error(e);
-      if (!localRow) setAlert("danger", "Falha ao carregar o registro.");
-    }
-  }
+// ============================ Alert/Loading ============================
+function showAlert(msg: string, type: "info"|"success"|"warning"|"danger" = "warning") {
+  if (!alertBox) return;
+  alertBox.textContent = msg;
+  alertBox.className = `alert alert-${type}`;
+  alertBox.classList.remove("d-none");
+}
+function hideAlert() { alertBox?.classList.add("d-none"); }
+function setSaving(isSaving: boolean) {
+  const btns = (form?.querySelectorAll("button[type='submit']") || []) as NodeListOf<HTMLButtonElement>;
+  btns.forEach(b => {
+    b.disabled = isSaving;
+    b.innerHTML = isSaving
+      ? `<span class="spinner-border spinner-border-sm me-1"></span> Salvando...`
+      : `<i class="bi bi-save"></i> Salvar`;
+  });
 }
 
-function populateForm(reg: Registro) {
-  if (nomeInput)  nomeInput.value  = trim(reg[COLS.nome] ?? reg["nome"]);
-  if (emailInput) emailInput.value = trim(reg[COLS.email] ?? reg["email"]);
-  if (obsInput) {
-    obsInput.value =
-      trim(reg[COLS.obs] ?? reg["Observacoes"] ?? reg["observações"] ?? reg["observacoes"]);
-    // ajusta a altura ao novo conteúdo:
-    obsAuto?.resize();
-  }
+// ============================ Imagem UI handlers ============================
+imgDrop?.addEventListener("click", () => inputFile?.click());
+($("#imgRetake") as HTMLButtonElement | null)?.addEventListener("click", () => inputFile?.click());
 
-  const cur = trim(reg[COLS.fotoFileId] ?? reg["Foto"]);
-  if (fotoFileIdAtualHidden) fotoFileIdAtualHidden.value = cur;
-  showImageFromAnyValue(cur);
-}
-
-/** ==================== Eventos de imagem ==================== */
-const imgDropArea = imgDrop;
-imgDropArea?.addEventListener("click", () => fotoInput?.click());
-fotoRetakeBtn?.addEventListener("click", () => fotoInput?.click());
-
-fotoDeleteBtn?.addEventListener("click", (ev) => {
-  // **novo**: evita que o clique no X acione o clique da área #imgDrop
-  ev.preventDefault();
-  ev.stopPropagation();
-
-  removerFoto = true;
-  novoArquivo = null;
-  if (fotoInput) fotoInput.value = "";
-  setPreviewHidden(true); // só some com a imagem
-  setAlert("warning", "A foto será removida ao salvar.");
+imgDelete?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  photoRemoved = true;
+  selectedFile = null;
+  if (inputFile) inputFile.value = "";
+  if (imgPreview) { imgPreview.src = ""; imgPreview.classList.add("d-none"); }
+  imgPlaceholder?.classList.remove("d-none");
+  imgDelete?.classList.add("d-none");
+  imgActions?.classList.add("d-none");
 });
 
-
-fotoInput?.addEventListener("change", () => {
-  removerFoto = false;
-  const f = (fotoInput.files?.[0] as File | undefined) || null;
-  novoArquivo = f;
-  if (f && fotoPreview) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      fotoPreview.src = String(reader.result);
-      setPreviewHidden(false);
-    };
-    reader.readAsDataURL(f);
-  } else {
-    const cur = fotoFileIdAtualHidden?.value || "";
-    showImageFromAnyValue(cur);
-  }
-});
-
-/** ==================== Submit (upload/substituição/remoção) ==================== */
-form?.addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-
-  const tab = getParam("tab") || TAB;
-  const rowIndex = Number(getParam("rowIndex") || NaN);
-  if (!Number.isInteger(rowIndex) || rowIndex < 1) {
-    setAlert("danger", "Parâmetros inválidos (rowIndex precisa ser >= 1).");
-    return;
-  }
-
-  const novoNome = trim(nomeInput?.value);
-  const novoEmail = trim(emailInput?.value);
-  const novasObs = trim(obsInput?.value);
-
-  const valorAntigo = fotoFileIdAtualHidden?.value || "";
-  const fileIdAntigo = DriveClient.extractDriveId(valorAntigo) || "";
-
-  const atualizado: Record<string, string> = {
-    [COLS.nome]: novoNome,
-    [COLS.email]: novoEmail,
-    [COLS.obs]: novasObs,
-    [COLS.fotoFileId]: valorAntigo, // default: mantém
+inputFile?.addEventListener("change", () => {
+  const file = inputFile.files && inputFile.files[0];
+  if (!file) return;
+  photoRemoved = false;
+  selectedFile = file;
+  const reader = new FileReader();
+  reader.onload = () => {
+    if (imgPreview) {
+      imgPreview.src = String(reader.result);
+      imgPreview.classList.remove("d-none");
+    }
+    imgPlaceholder?.classList.add("d-none");
+    imgDelete?.classList.remove("d-none");
+    imgActions?.classList.remove("d-none");
   };
+  reader.readAsDataURL(file);
+});
 
+// ============================ Inicialização ============================
+document.addEventListener("DOMContentLoaded", () => {
+  loadNavbar();
+  void init();
+});
+
+async function init() {
   try {
-    if (!(await authReady())) {
-      setAlert("warning", "Não foi possível autenticar agora. Tente novamente.");
-      return;
+    const usp = new URLSearchParams(location.search);
+    const rowIndex = Number(usp.get("rowIndex"));
+    if (!Number.isFinite(rowIndex) || rowIndex < 1) {
+      showAlert("rowIndex inválido.", "danger"); return;
     }
 
-    // === IMAGEM ===
-    // 1) remoção explícita
-    if (removerFoto && fileIdAntigo) {
-      try { await (drive as any).deleteFile?.(fileIdAntigo); } catch {}
-      atualizado[COLS.fotoFileId] = "";
+    tabEl && (tabEl.value = "Cadastro");
+    rowIndexEl && (rowIndexEl.value = String(rowIndex));
+
+    // 1) Cache-first: carrega registro + imagem do IndexedDB
+    const cached = await findUserInCache(rowIndex);
+    if (cached) {
+      console.log("[Editar] cache → registro:", cached);
+      await renderUserWithImageFromCache(cached); // foto do cache local
+      original = deepClone(cached);
+      current = deepClone(cached);
+    } else {
+      console.warn("[Editar] registro não encontrado no cache para rowIndex", rowIndex);
     }
 
-    // 2) substituição por novo upload
-    if (novoArquivo) {
-      // se havia antiga e não foi marcada remoção, ainda assim apagamos a antiga
-      if (fileIdAntigo && !removerFoto) {
-        try { await (drive as any).deleteFile?.(fileIdAntigo); } catch {}
-      }
+    // 2) Metadados: alinhar local com Sheets e verificar nova versão
+    const meta = await (sheets as any).upsertMetaLocal?.("Cadastro") ?? null;
+    if (meta && meta.index >= 1) {
+      const remoteIso = await sheets.getMetaLastModByIndexFast(meta.index);
+      const changed = !!remoteIso && (!cached || remoteIso > meta.lastMod);
+      console.log("[Editar] meta local:", meta, " | remoto:", remoteIso, " | changed:", changed);
 
-      const pastaImagens = await drive.ensurePath(["pwa-sheets-helloworld", "Cadastro", "Imagens"]);
-      const uploaded = await drive.uploadImage(novoArquivo, pastaImagens);
-      try { await drive.setPublic(uploaded.id); } catch {}
-      atualizado[COLS.fotoFileId] = uploaded.id;
-    }
+      if (changed) {
+        // 3) Buscar SOMENTE a linha atualizada
+        const fresh = await sheets.getObjectByIndex<Record<string, any>>("Cadastro", rowIndex);
+        if (fresh?.object) {
+          if (isSoftDeletedRow(fresh.object)) {
+            showAlert("Este registro foi excluído recentemente.", "warning");
+          } else {
+            const user = normalize(rowIndex, fresh.object);
 
-    // === Atualiza a linha no Sheets ===
-    await sheets.updateRowByIndex(tab, rowIndex, atualizado);
+            // Atualiza cache de usuários
+            await updateUserInCache(user);
 
-    // === Atualiza Metadados e versão local ===
-    const meta = await sheets.upsertMeta(TAB);
-    await setLocalVersion(TAB, meta.lastMod);
+            // Atualiza/valida cache da IMAGEM: se mudou a key (id/url), rebaixa e grava Blob
+            const changedPhoto = changedImage(current, user);
+            if (changedPhoto && user.fotoUrl) {
+              await cacheImageIfNeeded(user);
+            }
 
-    // === Atualiza IndexedDB do registro ===
-    const rowLocal: Registro = {
-      rowIndex,
-      [COLS.nome]: novoNome,
-      [COLS.email]: novoEmail,
-      [COLS.obs]: novasObs,
-      [COLS.fotoFileId]: atualizado[COLS.fotoFileId],
-    };
-    await putRowToIDB(rowLocal);
-
-    // === Cache de imagem (IDB images) ===
-    const oldKey = driveKeyFromAny(valorAntigo);
-    const newKey = driveKeyFromAny(atualizado[COLS.fotoFileId]);
-
-    if (!same(oldKey, newKey)) {
-      if (oldKey) { try { await deleteImageBlob(oldKey); } catch {} }
-      if (newKey) {
-        try {
-          if (newKey.startsWith("drive:") && await authReady()) {
-            const b = await fetchDriveImageBlob(newKey.slice(6));
-            await putImageBlob(newKey, b);
-          } else if (!newKey.startsWith("drive:")) {
-            const r = await fetch(newKey);
-            if (r.ok) await putImageBlob(newKey, await r.blob());
+            await renderUserWithImageFromCache(user);
+            original = deepClone(user);
+            current  = deepClone(user);
           }
-        } catch {}
+        }
+      } else if (!cached && current) {
+        // se não havia cache mas conseguimos current (caso improvável), render já ocorreu
       }
     }
 
-    setAlert("success", "Registro atualizado com sucesso!");
-    setTimeout(() => (window.location.href = "./consulta.html"), 700);
+    if (!current) {
+      showAlert("Não foi possível carregar o registro.", "danger");
+    }
+
   } catch (e: any) {
     console.error(e);
-    setAlert("danger", "Falha ao salvar as alterações.");
+    showAlert(e?.message || "Falha ao carregar edição.", "danger");
+  }
+}
+
+// ============================ Cache helpers ============================
+async function findUserInCache(rowIndex: number): Promise<Usuario | null> {
+  const all = await db.getAllUsers();
+  return all.find(u => u.rowIndex === rowIndex) || null;
+}
+async function updateUserInCache(user: Usuario) {
+  await db.upsertUser(user);
+}
+
+function isSoftDeletedRow(obj: LinhaCadastro): boolean {
+  const vals = Object.values(obj ?? {});
+  if (!vals.length) return false;
+  return vals.every(v => String(v ?? "").trim() === "-");
+}
+
+function changedImage(a: Usuario | null, b: Usuario | null): boolean {
+  if (!a || !b) return true;
+  return (a.fotoId ?? null) !== (b.fotoId ?? null) || (a.fotoUrl ?? null) !== (b.fotoUrl ?? null);
+}
+
+async function cacheImageIfNeeded(u: Usuario) {
+  const key = imgKey(u);
+  if (!key || !u.fotoUrl) return;
+  const exists = await db.getImage(key);
+  if (!exists) {
+    try {
+      const blob = await fetchBlob(u.fotoUrl);
+      await db.putImage(key, blob);
+      console.log("[Editar] imagem cacheada:", key);
+    } catch (e) {
+      console.warn("[Editar] falha ao baixar/cachear imagem:", e);
+    }
+  }
+}
+
+async function renderUserWithImageFromCache(u: Usuario) {
+  // 1) Preenche campos
+  setFormFields(u);
+
+  // 2) Tenta foto via cache de Blob
+  const key = imgKey(u);
+  if (key) {
+    const blob = await db.getImage(key);
+    if (blob) {
+      // usa blob: URL (sem bater no Drive)
+      const url = URL.createObjectURL(blob);
+      setImage(url, true);
+      return;
+    }
+    // se não tem no cache mas tem URL, baixa uma vez e cacheia
+    if (u.fotoUrl) {
+      try {
+        const b = await fetchBlob(u.fotoUrl);
+        await db.putImage(key, b);
+        const url = URL.createObjectURL(b);
+        setImage(url, true);
+        return;
+      } catch (e) {
+        console.warn("[Editar] falha ao baixar imagem para cache:", e);
+      }
+    }
+  }
+
+  // 3) Sem imagem
+  setImage(null, false);
+}
+
+function setFormFields(u: Usuario) {
+  nomeEl && (nomeEl.value = u.nome || "");
+  emailEl && (emailEl.value = u.email || "");
+  obsEl && (obsEl.value = u.observacoes || "");
+  fotoFileIdAtual && (fotoFileIdAtual.value = u.fotoId || "");
+}
+
+function setImage(objUrl: string | null, has: boolean) {
+  if (has && objUrl) {
+    if (imgPreview) { imgPreview.src = objUrl; imgPreview.classList.remove("d-none"); }
+    imgPlaceholder?.classList.add("d-none");
+    imgDelete?.classList.remove("d-none");
+    imgActions?.classList.remove("d-none");
+  } else {
+    if (imgPreview) { imgPreview.src = ""; imgPreview.classList.add("d-none"); }
+    imgPlaceholder?.classList.remove("d-none");
+    imgDelete?.classList.add("d-none");
+    imgActions?.classList.add("d-none");
+  }
+}
+
+// ============================ Form / Salvar ============================
+function readForm(): Usuario {
+  const rowIndex = Number(rowIndexEl?.value || 0);
+  return {
+    rowIndex,
+    nome: nomeEl?.value?.trim() || "",
+    email: emailEl?.value?.trim() || "",
+    observacoes: obsEl?.value?.trim() || "",
+    fotoId: fotoFileIdAtual?.value?.trim() || current?.fotoId || null,
+    fotoUrl: current?.fotoUrl || null,
+  };
+}
+
+function hasChanges(a: Usuario | null, b: Usuario | null): boolean {
+  if (!a || !b) return true;
+  return (
+    a.nome !== b.nome ||
+    a.email !== b.email ||
+    a.observacoes !== b.observacoes ||
+    a.fotoId !== b.fotoId ||
+    a.fotoUrl !== b.fotoUrl ||
+    selectedFile !== null ||
+    photoRemoved === true
+  );
+}
+
+form?.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  hideAlert();
+
+  if (!current) { showAlert("Nada para salvar.", "danger"); return; }
+
+  const before = readForm();
+  let next = deepClone(before);
+
+  if (!hasChanges(original, next)) {
+    console.log("[Editar] nenhuma alteração → voltar à consulta");
+    return redirectToConsulta();
+  }
+
+  try {
+    setSaving(true);
+    showAlert("Salvando alterações...", "info");
+
+    const hadOldPhotoId = !!current?.fotoId;
+    const hadOldPhotoUrl = !!current?.fotoUrl;
+    const oldKey = imgKey(current || {});
+
+    // Remoção
+    if (photoRemoved) {
+      if ((hadOldPhotoId || hadOldPhotoUrl) && typeof window.deleteDriveFile === "function") {
+        await window.deleteDriveFile(current?.fotoId || current?.fotoUrl || "");
+      }
+      if (oldKey) { try { await db.delImage(oldKey); } catch {} }
+      next.fotoId = null;
+      next.fotoUrl = null;
+    }
+
+    // Substituição
+    if (selectedFile && typeof window.uploadDriveImage === "function") {
+      if ((hadOldPhotoId || hadOldPhotoUrl) && typeof window.deleteDriveFile === "function") {
+        await window.deleteDriveFile(current?.fotoId || current?.fotoUrl || "");
+      }
+      if (oldKey) { try { await db.delImage(oldKey); } catch {} }
+
+      const up = await window.uploadDriveImage(selectedFile);
+      next.fotoId = up?.id ?? null;
+      next.fotoUrl = up?.url ?? null;
+
+      // já baixa e grava a nova foto no cache (UX mais suave ao voltar para consulta/editar)
+      if (next.fotoUrl) {
+        const newKey = imgKey(next)!;
+        try {
+          const blob = await fetchBlob(next.fotoUrl);
+          await db.putImage(newKey, blob);
+        } catch (e) {
+          console.warn("[Editar] falha ao cachear nova imagem:", e);
+        }
+      }
+    }
+
+    // Se após regras de foto nada mudou, retorna
+    if (!hasChanges(original, next)) {
+      console.log("[Editar] nenhuma alteração após regras de foto → voltar");
+      return redirectToConsulta();
+    }
+
+    // Persistir no Sheets
+    const rowIndex = next.rowIndex;
+    const dataToUpdate: Record<string, string> = {
+      "Nome": next.nome,
+      "Email": next.email,
+      "Observacoes": next.observacoes,
+    };
+    // ajuste aqui o nome do cabeçalho de URL/ID conforme sua planilha
+    if (next.fotoUrl !== undefined) dataToUpdate["Imagem"] = next.fotoUrl ?? "";
+    if (next.fotoId  !== undefined) dataToUpdate["FotoId"] = next.fotoId ?? "";
+
+    console.log("[Editar] updateRowByIndex(Cadastro):", { rowIndex, dataToUpdate });
+    await sheets.updateRowByIndex("Cadastro", rowIndex, dataToUpdate);
+
+    // Metadados — APENAS Sheets
+    console.log("[Editar] upsertMetaSheet('Cadastro')");
+    await (sheets as any).upsertMetaSheet?.("Cadastro");
+
+    // Atualiza cache local de usuário
+    current = deepClone(next);
+    original = deepClone(next);
+    await updateUserInCache(current);
+
+    showAlert("Informações atualizadas.", "success");
+    await wait(800);
+    redirectToConsulta();
+
+  } catch (e: any) {
+    console.error(e);
+    showAlert(e?.message || "Falha ao salvar alterações.", "danger");
+  } finally {
+    setSaving(false);
   }
 });
 
-/** ==================== Boot ==================== */
-document.addEventListener("DOMContentLoaded", async () => {
-  try { await GoogleAuthManager.authenticate(); } catch {}
-  // inicia o auto-expand do textarea #observacoes
-  obsAuto = initAutoExpand("#observacoes", 320);
-
-  await loadLocalFirstThenValidate();
-});
+// ============================ Navegação ============================
+function redirectToConsulta() {
+  const usp = new URLSearchParams({ voltei: "1" });
+  navigateTo(`src/presentation/pages/consulta.html?${usp.toString()}`);
+}
