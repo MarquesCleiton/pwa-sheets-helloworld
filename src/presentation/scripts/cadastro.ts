@@ -2,43 +2,57 @@ import { SheetsClient } from "../../infrastructure/google/SheetsClient";
 import { DriveClient } from "../../infrastructure/google/DriveClient";
 import { loadNavbar } from "../../shared/loadNavbar";
 
-const $ = <T extends HTMLElement = HTMLElement>(sel: string) =>
-  document.querySelector(sel) as T | null;
+// ====== CONFIG ======
+const SHARED_FOLDER_ID = "1zId11Ydti8d0FOQoQjd9lQmPo6GiJx26"; // Pasta fixa
+const TAB = "Cadastro";
+const HOME = (import.meta as any)?.env?.BASE_URL ? `${(import.meta as any).env.BASE_URL}` : "/";
 
-const form        = $("#cadastroForm") as HTMLFormElement | null;
-const inputNome   = $("#nome") as HTMLInputElement | null;
-const inputMail   = $("#email") as HTMLInputElement | null;
-const inputObs    = $("#obs") as HTMLTextAreaElement | null;
+// ====== Helper ======
+const $ = <T extends Element = HTMLElement>(sel: string) =>
+  document.querySelector<T>(sel);
 
-// imagem (AppSheet-like)
-const inputFile   = $("#imagem") as HTMLInputElement | null;
-const imgDrop     = $("#imgDrop") as HTMLDivElement | null;
-const imgPreview  = $("#imgPreview") as HTMLImageElement | null;
-const imgDelete   = $("#imgDelete") as HTMLButtonElement | null;
-const imgRetake   = $("#imgRetake") as HTMLButtonElement | null;
-const imgActions  = $("#imgActions") as HTMLDivElement | null;
-const imgPh       = $("#imgPlaceholder") as HTMLDivElement | null;
+// ====== Elementos ======
+const form        = $<HTMLFormElement>("#cadastroForm");
+const inputNome   = $<HTMLInputElement>("#nome");
+const inputMail   = $<HTMLInputElement>("#email");
+const inputObs    = $<HTMLTextAreaElement>("#obs");
 
-const alertBox    = $("#authAlert") as HTMLDivElement | null;
-const statusBox   = $("#status") as HTMLDivElement | null;
-const btnSalvar   = $("#btnSalvar") as HTMLButtonElement | null;
+const inputFile   = $<HTMLInputElement>("#imagem");
+const imgDrop     = $<HTMLDivElement>("#imgDrop");
+const imgPreview  = $<HTMLImageElement>("#imgPreview");
+const imgDelete   = $<HTMLButtonElement>("#imgDelete");
+const imgRetake   = $<HTMLButtonElement>("#imgRetake");
+const imgActions  = $<HTMLDivElement>("#imgActions");
+const imgPh       = $<HTMLDivElement>("#imgPlaceholder");
 
+const alertBox    = $<HTMLDivElement>("#authAlert");
+const statusBox   = $<HTMLDivElement>("#status");
+const btnSalvar   = $<HTMLButtonElement>("#btnSalvar");
+const btnSair     = $<HTMLButtonElement>("#btnSair");
+
+// ====== Navbar ======
+document.addEventListener("DOMContentLoaded", () => {
+  loadNavbar();
+  console.log("[Cadastro] Navbar carregada.");
+});
+
+// ====== Alert/Status ======
 function showAlert(msg: string, type: "success" | "warning" | "danger" = "warning") {
   if (!alertBox) return;
   alertBox.className = `alert alert-${type}`;
   alertBox.textContent = msg;
   alertBox.classList.remove("d-none");
+  console.log("[Cadastro] ALERT:", type, msg);
 }
 function clearAlert() { alertBox?.classList.add("d-none"); }
-function setStatus(msg: string) { if (statusBox) statusBox.textContent = msg; }
+function setStatus(msg: string) { if (statusBox) statusBox.textContent = msg; console.log("[Cadastro] STATUS:", msg); }
 
-// ====== UI de imagem ======
+// ====== UI Imagem ======
 function showPreview(src: string) {
   imgPh?.classList.add("d-none");
   if (imgPreview) { imgPreview.src = src; imgPreview.classList.remove("d-none"); }
   imgDelete?.classList.remove("d-none");
   imgActions?.classList.remove("d-none");
-  // aumenta um pouco a área quando tem preview
   if (imgDrop) imgDrop.style.minHeight = "220px";
 }
 function clearImage() {
@@ -50,45 +64,30 @@ function clearImage() {
   if (imgDrop) imgDrop.style.minHeight = "140px";
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-  loadNavbar();
-  // Clique em toda a área abre o seletor
-  imgDrop?.addEventListener("click", (e) => {
-    // Se clicou no X, não abra file picker
-    if ((e.target as HTMLElement).closest("#imgDelete")) return;
-    inputFile?.click();
-  });
-
-  // Retake = abrir seletor de arquivos novamente
-  imgRetake?.addEventListener("click", () => inputFile?.click());
-
-  // Exclusão = limpar tudo
-  imgDelete?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    clearImage();
-  });
-
-  // Ao escolher arquivo, mostra preview
-  inputFile?.addEventListener("change", () => {
-    const f = inputFile.files?.[0];
-    if (!f) { clearImage(); return; }
-    const url = URL.createObjectURL(f);
-    showPreview(url);
-  });
-
-  // Botão sair (ajuste conforme seu fluxo)
-  const btnSair = document.getElementById("btnSair") as HTMLButtonElement | null;
-  btnSair?.addEventListener("click", () => {
-    try { localStorage.removeItem("user"); localStorage.removeItem("accessToken"); } catch {}
-    window.location.href = "/index.html";
-  });
+// Clique em toda a área abre o seletor
+imgDrop?.addEventListener("click", (e) => {
+  if ((e.target as HTMLElement).closest("#imgDelete")) return;
+  inputFile?.click();
+});
+imgRetake?.addEventListener("click", () => inputFile?.click());
+imgDelete?.addEventListener("click", (e) => { e.stopPropagation(); clearImage(); });
+inputFile?.addEventListener("change", () => {
+  const f = inputFile.files?.[0];
+  if (!f) { clearImage(); return; }
+  const url = URL.createObjectURL(f);
+  showPreview(url);
+  console.log("[Cadastro] Preview atualizado:", { name: f.name, type: f.type, size: f.size });
 });
 
-// ====== Upload otimizado ======
-const drive = new DriveClient();
-// cache do caminho (reduz chamadas)
-const folderIdPromise = drive.ensurePath(["Cadastro", "Imagens"]);
+// ====== Botão Sair ======
+btnSair?.addEventListener("click", () => {
+  console.log("[Cadastro] Logout");
+  try { localStorage.removeItem("user"); localStorage.removeItem("accessToken"); } catch {}
+  window.location.href = `${HOME}index.html`;
+});
 
+// ====== Upload + Sheets ======
+const drive = new DriveClient();
 let inFlight = false;
 
 form?.addEventListener("submit", async (ev) => {
@@ -99,10 +98,8 @@ form?.addEventListener("submit", async (ev) => {
   clearAlert();
   setStatus("");
 
-  const TAB = "Cadastro";
   const sheets = new SheetsClient();
 
-  // desabilita botão
   if (btnSalvar) {
     btnSalvar.disabled = true;
     btnSalvar.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Salvando…';
@@ -118,54 +115,49 @@ form?.addEventListener("submit", async (ev) => {
       return;
     }
 
-    // paraleliza headers e pasta
-    const [headers, folderId] = await Promise.all([
-      sheets.getHeaders(TAB),
-      folderIdPromise,
-    ]);
+    setStatus("Carregando cabeçalhos…");
+    const headers = await sheets.getHeaders(TAB);
 
-    // só faz upload se há arquivo
+    // Upload da imagem
     const file = inputFile?.files?.[0] || null;
     let imagemURL = "";
 
     if (file) {
-      // validações
       if (!file.type.startsWith("image/")) throw new Error("Selecione uma imagem válida.");
       if (file.size > 5 * 1024 * 1024) throw new Error("Imagem muito grande (máx. 5 MB).");
 
       setStatus("Enviando imagem…");
-      const uploaded = await drive.uploadImage(file, folderId); // fast-path; tem fallback interno
+      const uploaded = await drive.uploadImage(file, SHARED_FOLDER_ID);
       await drive.setPublic(uploaded.id);
       imagemURL = DriveClient.viewUrl(uploaded.id);
     }
 
-    // mapeia pelos cabeçalhos reais
-    const lower = headers.map(h => h.toLowerCase());
+    // Mapeia por cabeçalho
+    const lower = headers.map(h => String(h || "").toLowerCase());
     const findHeader = (target: string) => {
       const i = lower.indexOf(target.toLowerCase());
       return i >= 0 ? headers[i] : null;
     };
 
     const data: Record<string, string> = {};
-    const hNome  = findHeader("Nome");           if (hNome)  data[hNome]  = nome;
-    const hEmail = findHeader("Email");          if (hEmail) data[hEmail] = email;
+    const hNome  = findHeader("Nome");  if (hNome)  data[hNome]  = nome;
+    const hEmail = findHeader("Email"); if (hEmail) data[hEmail] = email;
     const hObs   = findHeader("Observações") || findHeader("Observacoes");
     if (hObs) data[hObs] = obs;
-
     const hImg   = findHeader("Imagem");
     if (hImg && imagemURL) data[hImg] = imagemURL;
 
     setStatus("Gravando cadastro…");
     await sheets.appendRowByHeader(TAB, data);
+    await sheets.upsertMeta(TAB);
 
     showAlert("Cadastro criado com sucesso!", "success");
     setStatus("Cadastro criado com sucesso!");
-    await sheets.upsertMeta(TAB)
-    // opcional: limpar imagem e manter UX do bloco AppSheet
     clearImage();
     form?.reset();
   } catch (e: unknown) {
     const err = e as { message?: string };
+    console.error("[Cadastro] Erro:", err);
     showAlert(err?.message || "Erro ao salvar cadastro.", "danger");
     setStatus("");
   } finally {

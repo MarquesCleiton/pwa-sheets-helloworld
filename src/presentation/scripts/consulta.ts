@@ -1,37 +1,77 @@
-// src/presentation/scripts/consulta.ts
 import { GoogleAuthManager } from "../../infrastructure/auth/GoogleAuthManager";
 import { SheetsClient, MetaLocalEntry, MetaLocalMap } from "../../infrastructure/google/SheetsClient";
 import { DriveClient } from "../../infrastructure/google/DriveClient";
-import { loadNavbar } from "../../shared/loadNavbar";
 
-/** ================== Types / Const ================== */
-type CadastroRow = {
-  rowIndex: number;
-  Nome?: string; Email?: string; Observações?: string; Observacoes?: string;
-  Imagem?: string; Foto?: string; [k: string]: any;
+/** ==================== CONFIG ====================
+ * Preencha UMA das opções abaixo para centralizar no seu Drive:
+ * - rootFolderId: pasta fixa no seu "Meu Drive" (compartilhada com o grupo), ou
+ * - driveId: ID de uma Unidade Compartilhada (recomendado se quiser propriedade central).
+ */
+const CONFIG = {
+  DRIVE_ROOT_ID: "1qWCNneRI06SuL_VjUqn0dobAYea-HSew", // ex.: "1AbCDEFghijkLMNO_pastaDoMeuDrive" (ou "" se não for usar)
+  DRIVE_SHARED_ID: "",                         // ex.: "0AMXXXXXXXXXXXXXXXX9PVA" (ou "" se não for usar)
+  APP_ROOT_NAME: "pwa-sheets-helloworld",      // usado para ensurePath quando não há rootFolderId
+  TAB: "Cadastro",
+  PRELOAD_IMAGES: true,                        // baixa e salva blobs no IDB em uma atualização
 };
 
-const TAB = "Cadastro";
+const drive = new DriveClient({
+  rootFolderId: "1qWCNneRI06SuL_VjUqn0dobAYea-HSew", // 👈 sua pasta central
+  appRootName: "pwa-sheets-helloworld",              // mantemos por compatibilidade do cache de paths
+});
+const sheets = new SheetsClient();
+
+/** ==================== Types / Colunas ==================== */
+type Registro = {
+  rowIndex: number;
+  [k: string]: any;
+};
+const COLS = {
+  nome: "Nome",
+  email: "Email",
+  obs: "Observações", // aceitamos "Observacoes" ao ler
+  foto: "Imagem",     // ou "Foto", se sua planilha usar esse nome
+};
+
+/** ==================== DOM ==================== 
+ * Ajuste aqui se seu HTML tiver IDs/estrutura diferente.
+ */
+const cardsEl = document.querySelector<HTMLDivElement>("#cards");      // grid/listagem
+const refreshBtn = document.querySelector<HTMLButtonElement>("#btnAtualizar");
+const searchInput = document.querySelector<HTMLInputElement>("#busca");
+const alertBox = document.querySelector<HTMLDivElement>("#alert");
+
+function showAlert(kind: "success" | "warning" | "danger", msg: string) {
+  if (!alertBox) return;
+  alertBox.className = `alert alert-${kind}`;
+  alertBox.textContent = msg;
+  alertBox.classList.remove("d-none");
+  setTimeout(() => alertBox.classList.add("d-none"), 4000);
+}
+
+/** ==================== Auth guard ==================== */
+async function authReady(): Promise<boolean> {
+  try {
+    const g = (window as any).google;
+    if (!g || !g.accounts) {
+      console.info("[auth] GIS não disponível ainda → mantendo local-first.");
+      return false;
+    }
+    await GoogleAuthManager.authenticate();
+    return true;
+  } catch (e) {
+    console.info("[auth] não foi possível autenticar agora; seguindo com cache.", e);
+    return false;
+  }
+}
+
+/** ==================== IndexedDB ==================== */
 const DB_NAME = "pwa-rpg-cache";
 const DB_VERSION = 1;
 const STORE_VERSIONS = "versions";
 const STORE_CADASTRO = "cadastro";
 const STORE_IMAGES = "images";
 
-const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T | null;
-const show = (msg: string, type: "success" | "warning" | "danger" = "warning") => {
-  const el = $("#alert") as HTMLDivElement | null;
-  if (!el) return;
-  el.className = `alert alert-${type}`;
-  el.textContent = msg;
-  el.classList.remove("d-none");
-};
-function initials(name: string) {
-  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
-  return ((parts[0]?.[0] || "") + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase() || "U";
-}
-
-/** ================== IndexedDB (versions / cadastro / images) ================== */
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -45,12 +85,12 @@ function openDB(): Promise<IDBDatabase> {
     req.onerror = () => reject(req.error);
   });
 }
+
 async function getLocalVersion(tab: string): Promise<string | null> {
   const db = await openDB();
   return new Promise((res, rej) => {
     const tx = db.transaction(STORE_VERSIONS, "readonly");
-    const st = tx.objectStore(STORE_VERSIONS);
-    const rq = st.get(tab);
+    const rq = tx.objectStore(STORE_VERSIONS).get(tab);
     rq.onsuccess = () => res((rq.result as string) ?? null);
     rq.onerror = () => rej(rq.error);
   });
@@ -64,40 +104,38 @@ async function setLocalVersion(tab: string, iso: string): Promise<void> {
     tx.onerror = () => rej(tx.error);
   });
 }
-async function clearCadastro(): Promise<void> {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE_CADASTRO, "readwrite");
-    tx.objectStore(STORE_CADASTRO).clear();
-    tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error);
-  });
-}
-async function putCadastroRows(rows: CadastroRow[]): Promise<void> {
-  const db = await openDB();
-  return new Promise((res, rej) => {
-    const tx = db.transaction(STORE_CADASTRO, "readwrite");
-    const st = tx.objectStore(STORE_CADASTRO);
-    rows.forEach(r => st.put(r));
-    tx.oncomplete = () => res();
-    tx.onerror = () => rej(tx.error);
-  });
-}
-async function getAllCadastroRows(): Promise<CadastroRow[]> {
+
+async function readAllCadastroFromIDB(): Promise<Registro[]> {
   const db = await openDB();
   return new Promise((res, rej) => {
     const tx = db.transaction(STORE_CADASTRO, "readonly");
     const st = tx.objectStore(STORE_CADASTRO);
     const rq = st.getAll();
-    rq.onsuccess = () => {
-      const arr = (rq.result as CadastroRow[]) || [];
-      arr.sort((a, b) => a.rowIndex - b.rowIndex);
-      res(arr);
-    };
+    rq.onsuccess = () => res((rq.result as Registro[]) ?? []);
     rq.onerror = () => rej(rq.error);
   });
 }
-async function deleteCadastroRow(rowIndex: number): Promise<void> {
+async function putManyCadastroToIDB(rows: Registro[]): Promise<void> {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(STORE_CADASTRO, "readwrite");
+    const st = tx.objectStore(STORE_CADASTRO);
+    st.clear();
+    for (const r of rows) st.put(r);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+async function getCadastroByRow(rowIndex: number): Promise<Registro | null> {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(STORE_CADASTRO, "readonly");
+    const rq = tx.objectStore(STORE_CADASTRO).get(rowIndex);
+    rq.onsuccess = () => res((rq.result as Registro) ?? null);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function deleteCadastroByRow(rowIndex: number): Promise<void> {
   const db = await openDB();
   return new Promise((res, rej) => {
     const tx = db.transaction(STORE_CADASTRO, "readwrite");
@@ -106,6 +144,7 @@ async function deleteCadastroRow(rowIndex: number): Promise<void> {
     tx.onerror = () => rej(tx.error);
   });
 }
+
 async function getImageBlob(key: string): Promise<Blob | null> {
   const db = await openDB();
   return new Promise((res, rej) => {
@@ -134,35 +173,25 @@ async function deleteImageBlob(key: string): Promise<void> {
   });
 }
 
-/** ================== Utils (filtros / imagens) ================== */
-function getDataFieldValues(obj: Record<string, any>): string[] {
-  return Object.entries(obj).filter(([k]) => k !== "rowIndex").map(([, v]) => (v ?? "").toString().trim());
-}
-function isEmptyRow(obj: Record<string, any>): boolean {
-  const vals = getDataFieldValues(obj);
-  return vals.length === 0 || vals.every(v => v === "");
-}
-function isSoftDeleted(obj: Record<string, any>): boolean {
-  const vals = getDataFieldValues(obj);
-  return vals.length > 0 && vals.every(v => v === "-" || v === "");
-}
-function isLikelyDriveId(id: string | null | undefined): boolean {
-  return !!id && /^[A-Za-z0-9_-]{10,}$/.test(id);
-}
-function getImageKey(row: CadastroRow): string | null {
-  const raw = (row["Imagem"] ?? row["Foto"] ?? row["Imagem URL"] ?? row["ImagemUrl"] ?? row["image"] ?? "").toString().trim();
+/** ==================== Helpers ==================== */
+function trim(v: any) { return (v ?? "").toString().trim(); }
+function isLikelyDriveId(s: string | null | undefined) { return !!s && /^[A-Za-z0-9_-]{10,}$/.test(s); }
+function driveKeyFromAny(v: string | null | undefined): string | null {
+  const raw = trim(v);
   if (!raw) return null;
   const id = DriveClient.extractDriveId(raw);
   if (isLikelyDriveId(id)) return `drive:${id!}`;
   return raw.includes("://") ? raw : null;
 }
-function getDisplayUrl(row: CadastroRow): string | null {
-  const raw = (row["Imagem"] ?? row["Foto"] ?? row["Imagem URL"] ?? row["ImagemUrl"] ?? row["image"] ?? "").toString().trim();
-  if (!raw) return null;
-  const id = DriveClient.extractDriveId(raw);
-  if (isLikelyDriveId(id)) return DriveClient.viewUrl(id!, 72);
-  return raw.includes("://") ? raw : null;
+
+function isSoftDeletedRow(obj: Record<string, any>): boolean {
+  const vals = Object.values(obj).map(x => trim(x));
+  if (vals.length === 0) return true;
+  // considera "apagada" se TODAS as células relevantes são "-"
+  const nonEmpty = vals.filter(v => v !== "");
+  return nonEmpty.length > 0 && nonEmpty.every(v => v === "-");
 }
+
 async function fetchDriveImageBlob(fileId: string): Promise<Blob> {
   await GoogleAuthManager.authenticate();
   const token = GoogleAuthManager.getAccessToken();
@@ -171,266 +200,259 @@ async function fetchDriveImageBlob(fileId: string): Promise<Blob> {
   if (!res.ok) throw new Error(`Drive media ${res.status}`);
   return await res.blob();
 }
-async function cacheImagesForRows(rows: CadastroRow[]) {
-  const keys = new Set<string>();
-  for (const r of rows) {
-    if (isEmptyRow(r) || isSoftDeleted(r)) continue;
-    const k = getImageKey(r);
-    if (k) keys.add(k);
+
+/** ==================== Render ==================== */
+function renderList(rows: Registro[], term = "") {
+  if (!cardsEl) return;
+  const q = term.toLowerCase();
+  cardsEl.innerHTML = "";
+
+  const filtered = rows.filter(r => {
+    const n = trim(r[COLS.nome]).toLowerCase();
+    const e = trim(r[COLS.email]).toLowerCase();
+    const o = trim(r[COLS.obs] ?? r["Observacoes"]).toLowerCase();
+    return !q || n.includes(q) || e.includes(q) || o.includes(q);
+  });
+
+  for (const r of filtered) {
+    const name = trim(r[COLS.nome]);
+    const email = trim(r[COLS.email]);
+    const obs = trim(r[COLS.obs] ?? r["Observacoes"]);
+    const imgAny = trim(r[COLS.foto] ?? r["Foto"]);
+
+    const card = document.createElement("div");
+    card.className = "card shadow-sm mb-3";
+    card.dataset.rowIndex = String(r.rowIndex);
+
+    const imgWrap = document.createElement("div");
+    imgWrap.className = "card-img-top d-flex align-items-center justify-content-center";
+    imgWrap.style.minHeight = "140px";
+    const img = document.createElement("img");
+    img.style.maxHeight = "140px";
+    img.style.objectFit = "cover";
+    img.loading = "lazy";
+
+    (async () => {
+      const key = driveKeyFromAny(imgAny);
+      if (key) {
+        const cached = await getImageBlob(key);
+        if (cached) {
+          img.src = URL.createObjectURL(cached);
+        } else {
+          try {
+            if (key.startsWith("drive:") && await authReady()) {
+              const blob = await fetchDriveImageBlob(key.slice(6));
+              await putImageBlob(key, blob);
+              img.src = URL.createObjectURL(blob);
+            } else if (!key.startsWith("drive:")) {
+              const res = await fetch(key);
+              if (res.ok) {
+                const blob = await res.blob();
+                await putImageBlob(key, blob);
+                img.src = URL.createObjectURL(blob);
+              } else if (isLikelyDriveId(imgAny)) {
+                img.src = DriveClient.viewUrl(imgAny, 256);
+              }
+            } else if (isLikelyDriveId(imgAny)) {
+              img.src = DriveClient.viewUrl(imgAny, 256);
+            }
+          } catch {
+            if (isLikelyDriveId(imgAny)) img.src = DriveClient.viewUrl(imgAny, 256);
+          }
+        }
+      } else {
+        // sem imagem → placeholder
+        img.alt = "Sem imagem";
+      }
+    })();
+
+    imgWrap.appendChild(img);
+    card.appendChild(imgWrap);
+
+    const body = document.createElement("div");
+    body.className = "card-body";
+    body.innerHTML = `
+      <h5 class="card-title mb-1">${name || "(sem nome)"}</h5>
+      <div class="text-muted small mb-2">${email || ""}</div>
+      <p class="card-text">${obs || ""}</p>
+      <div class="d-flex gap-2">
+        <a class="btn btn-sm btn-primary" href="./editar.html?tab=${encodeURIComponent(CONFIG.TAB)}&rowIndex=${r.rowIndex}">Editar</a>
+        <button class="btn btn-sm btn-outline-danger" data-action="delete" data-row="${r.rowIndex}">Excluir</button>
+      </div>
+    `;
+    card.appendChild(body);
+    cardsEl.appendChild(card);
   }
-  await Promise.all(Array.from(keys).map(async (key) => {
-    const has = await getImageBlob(key);
-    if (has) return;
-    if (key.startsWith("drive:")) {
-      const blob = await fetchDriveImageBlob(key.slice(6));
-      await putImageBlob(key, blob);
+}
+
+/** ==================== Fluxo Local-first + Metadados ==================== */
+async function loadLocalThenValidateAndMaybeSync() {
+  // 1) Local-first
+  const localRows = await readAllCadastroFromIDB();
+  const activeLocal = localRows.filter(r => !isSoftDeletedRow(r));
+  renderList(activeLocal);
+
+  // 2) Metadados (fast-path): comparar versão
+  let meta: MetaLocalMap = sheets.getMetaLocal();
+  let entry: MetaLocalEntry | undefined = meta[CONFIG.TAB];
+  if (!entry) {
+    if (await authReady()) {
+      console.log("[meta] primeira sincronização de índices…");
+      meta = await sheets.buildMetaLocalFromSheet();
+      entry = meta[CONFIG.TAB];
+    } else {
+      console.log("[meta] sem auth; permanecendo com dados locais.");
+      return; // sem auth e sem índice → não há como validar remoto agora
+    }
+  }
+
+  const localVer = await getLocalVersion(CONFIG.TAB);
+  let remoteVer: string | null = null;
+
+  if (entry && entry.index >= 1) {
+    if (await authReady()) {
+      try {
+        remoteVer = await sheets.getMetaLastModByIndexFast(entry.index);
+        console.log("[meta] remoto (fast) =", remoteVer, "linha:", entry.index);
+      } catch (e) {
+        console.warn("[meta] fast-path falhou; usando cached:", e);
+        remoteVer = entry.lastMod || null;
+      }
+    } else {
+      remoteVer = entry.lastMod || null;
+    }
+  }
+
+  const needSync = (remoteVer == null) || (remoteVer !== localVer);
+  console.log("[consulta] needSync?", needSync, "localVer:", localVer, "remoteVer:", remoteVer);
+
+  // 3) Se divergente, baixar tudo do Sheets, filtrar, salvar no IDB, opcionalmente pré-carregar imagens, atualizar versão local
+  if (needSync && await authReady()) {
+    try {
+      console.time("[consulta] fetch Sheets Cadastro");
+      const rows = await sheets.getObjectsWithIndex<Record<string, any>>(CONFIG.TAB);
+      console.timeEnd("[consulta] fetch Sheets Cadastro");
+
+      const ativos: Registro[] = [];
+      for (const r of rows) {
+        if (isSoftDeletedRow(r.object)) continue;
+        ativos.push({ rowIndex: r.rowIndex, ...r.object });
+      }
+
+      console.log("[consulta] ativos:", ativos.length, "de", rows.length);
+      await putManyCadastroToIDB(ativos);
+
+      // Pré-carregar imagens (apenas dos ativos)
+      if (CONFIG.PRELOAD_IMAGES) {
+        console.time("[consulta] preload imagens");
+        for (const item of ativos) {
+          const any = (item[COLS.foto] ?? item["Foto"]) as string | undefined;
+          const key = driveKeyFromAny(any);
+          if (!key) continue;
+          if (await getImageBlob(key)) continue;
+          try {
+            if (key.startsWith("drive:") && await authReady()) {
+              const b = await fetchDriveImageBlob(key.slice(6));
+              await putImageBlob(key, b);
+            } else if (!key.startsWith("drive:")) {
+              const r = await fetch(key);
+              if (r.ok) await putImageBlob(key, await r.blob());
+            }
+          } catch { /* ignora falhas de preload */ }
+        }
+        console.timeEnd("[consulta] preload imagens");
+      }
+
+      // Atualiza versão local
+      if (remoteVer) {
+        await setLocalVersion(CONFIG.TAB, remoteVer);
+      } else {
+        const up = await sheets.upsertMeta(CONFIG.TAB);
+        await setLocalVersion(CONFIG.TAB, up.lastMod);
+      }
+
+      // re-render atualizado
+      renderList(ativos, searchInput?.value || "");
+      showAlert("success", "Dados atualizados.");
+    } catch (e) {
+      console.error(e);
+      showAlert("danger", "Falha ao atualizar dados do Sheets.");
+    }
+  }
+}
+
+/** ==================== Deleção (UI + Drive + Sheets + IDB) ==================== */
+async function handleDelete(rowIndex: number) {
+  if (!Number.isInteger(rowIndex) || rowIndex < 1) return;
+  const ok = confirm("Confirma excluir este registro?");
+  if (!ok) return;
+
+  try {
+    if (!(await authReady())) {
+      showAlert("warning", "Não foi possível autenticar agora.");
       return;
     }
-    const res = await fetch(key);
-    if (!res.ok) return;
-    const blob = await res.blob();
-    await putImageBlob(key, blob);
-  }));
-}
-async function objectUrlForRow(r: CadastroRow): Promise<string | null> {
-  if (isEmptyRow(r) || isSoftDeleted(r)) return null;
-  const key = getImageKey(r);
-  const display = getDisplayUrl(r);
-  if (!key && !display) return null;
-  if (key) {
-    const cached = await getImageBlob(key);
-    if (cached) return URL.createObjectURL(cached);
-  }
-  try {
-    if (key?.startsWith("drive:")) {
-      const blob = await fetchDriveImageBlob(key.slice(6));
-      await putImageBlob(key, blob);
-      return URL.createObjectURL(blob);
-    }
-    if (display) {
-      const res = await fetch(display);
-      if (res.ok) {
-        const b = await res.blob();
-        await putImageBlob(key || display, b);
-        return URL.createObjectURL(b);
+
+    const reg = await getCadastroByRow(rowIndex);
+    const imgAny = reg ? trim(reg[COLS.foto] ?? reg["Foto"]) : "";
+    const fileId = DriveClient.extractDriveId(imgAny) || "";
+
+    // 1) apaga imagem no Drive (se houver)
+    if (fileId) {
+      try {
+        console.log("[delete] apagando imagem no Drive:", fileId);
+        await drive.deleteFile(fileId);
+      } catch (e) {
+        console.warn("[delete] falha ao apagar imagem no Drive:", e);
       }
+      const key = driveKeyFromAny(imgAny);
+      if (key) { try { await deleteImageBlob(key); } catch {} }
     }
-  } catch {}
-  return display;
-}
 
-/** ================== Render ================== */
-function rowMatchesQuery(r: CadastroRow, q: string): boolean {
-  const n = (r.Nome ?? "").toString().toLowerCase();
-  const e = (r.Email ?? "").toString().toLowerCase();
-  const o = (r.Observações ?? r.Observacoes ?? "").toString().toLowerCase();
-  const needle = q.toLowerCase();
-  return n.includes(needle) || e.includes(needle) || o.includes(needle);
-}
-function editHref(rowIndex: number): string {
-  const p = new URLSearchParams({ tab: TAB, rowIndex: String(rowIndex) });
-  return `./editar.html?${p.toString()}`;
-}
-async function render(rows: CadastroRow[]) {
-  const tbody = $("#tbody") as HTMLTableSectionElement | null;
-  if (!tbody) return;
-  tbody.innerHTML = "";
-  for (const r of rows) {
-    const tr = document.createElement("tr");
-    tr.dataset.row = String(r.rowIndex);
+    // 2) soft delete no Sheets
+    console.log("[delete] softDeleteRowByIndex:", CONFIG.TAB, rowIndex);
+    await sheets.softDeleteRowByIndex(CONFIG.TAB, rowIndex);
 
-    const tdImg = document.createElement("td");
-    tdImg.style.width = "56px";
-    try {
-      const objUrl = await objectUrlForRow(r);
-      if (objUrl) {
-        const img = document.createElement("img");
-        img.src = objUrl; img.alt = "foto"; img.className = "avatar";
-        tdImg.appendChild(img);
-      } else {
-        const fb = document.createElement("div");
-        fb.className = "avatar-fallback";
-        fb.textContent = initials(String(r.Nome || ""));
-        tdImg.appendChild(fb);
-      }
-    } catch {
-      const fb = document.createElement("div");
-      fb.className = "avatar-fallback";
-      fb.textContent = initials(String(r.Nome || ""));
-      tdImg.appendChild(fb);
-    }
-    tr.appendChild(tdImg);
+    // 3) atualiza metadados / versão local
+    const meta = await sheets.upsertMeta(CONFIG.TAB);
+    await setLocalVersion(CONFIG.TAB, meta.lastMod);
 
-    const tdNome = document.createElement("td");
-    tdNome.textContent = String(r.Nome ?? ""); tdNome.className = "fw-medium";
-    tr.appendChild(tdNome);
+    // 4) remove do IndexedDB e do DOM
+    await deleteCadastroByRow(rowIndex);
+    const card = cardsEl?.querySelector(`[data-row-index="${rowIndex}"]`);
+    card?.parentElement?.removeChild(card as Node);
 
-    const tdMail = document.createElement("td");
-    tdMail.textContent = String(r.Email ?? ""); tr.appendChild(tdMail);
-
-    const tdObs = document.createElement("td");
-    tdObs.textContent = String(r.Observações ?? r.Observacoes ?? ""); tr.appendChild(tdObs);
-
-    const tdAct = document.createElement("td");
-    tdAct.className = "text-end actions";
-    tdAct.innerHTML = `
-      <div class="btn-group" role="group" aria-label="Ações">
-        <a class="btn btn-outline-primary btn-sm" href="${editHref(r.rowIndex)}" title="Editar">
-          <i class="bi bi-pencil-square"></i>
-        </a>
-        <button class="btn btn-outline-danger btn-sm btn-del" title="Excluir">
-          <i class="bi bi-trash"></i>
-        </button>
-      </div>`;
-    tr.appendChild(tdAct);
-
-    tbody.appendChild(tr);
-  }
-
-  // bind excluir
-  const tbodyEl = $("#tbody") as HTMLTableSectionElement | null;
-  const sheets = new SheetsClient();
-  const drive = new DriveClient();
-  tbodyEl?.querySelectorAll<HTMLButtonElement>(".btn-del").forEach(btn => {
-    btn.addEventListener("click", async (ev) => {
-      const tr = (ev.currentTarget as HTMLElement).closest("tr");
-      if (!tr) return;
-      const idx = Number(tr.getAttribute("data-row") || NaN);
-      if (!Number.isInteger(idx)) return;
-      const row = currentCache.find(x => x.rowIndex === idx);
-      if (!row) return;
-      if (!confirm("Confirmar exclusão?")) return;
-
-      // apaga imagem (se houver id)
-      const raw = (row["Imagem"] ?? row["Foto"] ?? "").toString().trim();
-      const id = DriveClient.extractDriveId(raw);
-      if (isLikelyDriveId(id)) {
-        try { await (drive as any).deleteFile?.(id); } catch {}
-      }
-      // soft delete + caches
-      await sheets.softDeleteRowByIndex(TAB, row.rowIndex);
-      await deleteCadastroRow(row.rowIndex);
-      const k = getImageKey(row); if (k) await deleteImageBlob(k);
-
-      // upsert meta e atualizar versões
-      const entry = await sheets.upsertMeta(TAB); // grava novo ISO
-      await setLocalVersion(TAB, entry.lastMod);
-
-      // atualiza a UI
-      currentCache = currentCache.filter(r => r.rowIndex !== idx);
-      await render(currentCache);
-      show("Registro excluído.", "success");
-    });
-  });
-}
-
-/** ================== Fluxo principal (Local-first) ================== */
-let currentCache: CadastroRow[] = [];
-
-/** Baixa Cadastro do Sheets, persiste no cache e retorna os ativos. */
-async function refreshCadastroFromSheets(sheets: SheetsClient, newRemoteIso: string | null): Promise<CadastroRow[]> {
-  console.log("[sync] baixando Cadastro do Sheets…");
-  const rows = await sheets.getObjectsWithIndex<Record<string, any>>(TAB);
-  const norm: CadastroRow[] = rows
-    .map(r => ({ rowIndex: r.rowIndex, ...(r.object || {}) }))
-    .filter(r => !isEmptyRow(r) && !isSoftDeleted(r));
-
-  await clearCadastro();
-  await putCadastroRows(norm);
-  await cacheImagesForRows(norm);
-
-  if (newRemoteIso) {
-    await setLocalVersion(TAB, newRemoteIso);
-    console.log("[sync] versão local atualizada para:", newRemoteIso);
-  }
-  return norm;
-}
-
-/**
- * LOCAL-FIRST:
- * 1) lê e renderiza do IndexedDB imediatamente;
- * 2) valida Metadados (fast-path B{linha}); se divergir, baixa Cadastro, atualiza cache e re-renderiza.
- */
-async function loadLocalThenValidate({ forceNetwork = false } = {}) {
-  const sheets = new SheetsClient();
-
-  // 1) Local primeiro
-  let cached = await getAllCadastroRows();
-  cached = cached.filter(r => !isEmptyRow(r) && !isSoftDeleted(r));
-  currentCache = cached;
-  console.log(`[init] renderizando ${cached.length} registros do cache local`);
-  await render(currentCache);
-
-  // 2) Validar em background: Metadados por índice (fast-path)
-  let metaLocal: MetaLocalMap = sheets.getMetaLocal();
-  let entry: MetaLocalEntry | undefined = metaLocal[TAB];
-  if (!entry) {
-    console.log("[meta] não há entrada local; construindo meta local…");
-    metaLocal = await sheets.buildMetaLocalFromSheet();
-    entry = metaLocal[TAB];
-  }
-
-  const localVer = await getLocalVersion(TAB);
-  let remoteVer: string | null = null;
-  let needNetwork = !!forceNetwork;
-
-  if (entry && Number.isInteger(entry.index) && entry.index >= 1) {
-    try {
-      remoteVer = await sheets.getMetaLastModByIndexFast(entry.index);
-      console.log("[meta] remoto (fast) =", remoteVer, "(linha", entry.index, ")");
-      if (!forceNetwork) needNetwork = (remoteVer == null) || (remoteVer !== localVer);
-    } catch (e) {
-      console.warn("[meta] fast-path falhou; usando valor local do meta:", e);
-      remoteVer = entry.lastMod || null;
-      if (!forceNetwork) needNetwork = (remoteVer == null) || (remoteVer !== localVer);
-    }
-  } else {
-    needNetwork = true; // primeira sincronização
-  }
-
-  console.log("[check] localVer:", localVer, " | remoteVer:", remoteVer, " | needNetwork:", needNetwork);
-
-  // 3) Se divergente, sincroniza e re-renderiza
-  if (needNetwork) {
-    try {
-      const fresh = await refreshCadastroFromSheets(sheets, remoteVer);
-      currentCache = fresh;
-      await render(currentCache);
-      show("Lista atualizada.", "success");
-    } catch (e: any) {
-      console.error("[sync] falha ao sincronizar do Sheets:", e);
-      // mantém o que já foi exibido do cache
-      show("Falha ao atualizar do servidor. Exibindo dados locais.", "warning");
-    }
+    showAlert("success", "Registro excluído.");
+  } catch (e) {
+    console.error(e);
+    showAlert("danger", "Falha ao excluir registro.");
   }
 }
 
-/** ================== UI ================== */
-function wireUi() {
-  const q = $("#q") as HTMLInputElement | null;
-  const btnAtualizar = $("#btnAtualizar") as HTMLButtonElement | null;
-  const btnSair = $("#btnSair") as HTMLButtonElement | null;
+/** ==================== Eventos UI ==================== */
+cardsEl?.addEventListener("click", (ev) => {
+  const t = ev.target as HTMLElement;
+  const btn = t.closest("[data-action='delete']") as HTMLElement | null;
+  if (btn) {
+    const row = Number(btn.getAttribute("data-row") || "0");
+    handleDelete(row);
+  }
+});
 
-  q?.addEventListener("input", async () => {
-    const term = (q.value || "").trim();
-    if (!term) return render(currentCache);
-    await render(currentCache.filter(r => rowMatchesQuery(r, term)));
-  });
+refreshBtn?.addEventListener("click", async () => {
+  await loadLocalThenValidateAndMaybeSync();
+});
 
-  btnAtualizar?.addEventListener("click", () => loadLocalThenValidate({ forceNetwork: true }));
+searchInput?.addEventListener("input", async () => {
+  const rows = await readAllCadastroFromIDB();
+  const ativos = rows.filter(r => !isSoftDeletedRow(r));
+  renderList(ativos, searchInput.value);
+});
 
-  btnSair?.addEventListener("click", () => {
-    try { GoogleAuthManager.logout?.(); } catch {}
-    localStorage.clear();
-    indexedDB.deleteDatabase(DB_NAME);
-    window.location.href = "./index.html";
-  });
-}
-
-/** ================== Boot ================== */
+/** ==================== Boot ==================== */
 document.addEventListener("DOMContentLoaded", async () => {
+  console.time("[consulta] boot");
   try { await GoogleAuthManager.authenticate(); } catch {}
-  wireUi();
-  loadNavbar();
-  await loadLocalThenValidate();
+  await loadLocalThenValidateAndMaybeSync();
+  console.timeEnd("[consulta] boot");
 });
